@@ -126,5 +126,8 @@ export default defineEventHandler(async (event) => {
     })
   })
 
+  // Alerte de budget : verifiee au plus toutes les 10 min, sans jamais retarder ni faire echouer l'ingestion.
+  void checkBudget().catch(() => undefined)
+
   return { ok: true, count: events.length }
 })

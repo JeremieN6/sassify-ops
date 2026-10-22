@@ -2,28 +2,105 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Design tokens (copie de tokens.css) : utiles pour les styles en ligne et les futures intégrations. */
+:root {
+  color-scheme: dark;
+  --bg: #080b12;
+  --rail: #0b0f18;
+  --panel: #0e1320;
+  --input: #090d17;
+  --line: #1d2638;
+  --line-strong: #2a3550;
+  --text: #e8ecf4;
+  --muted: #8e99b0;
+  --accent: #8b93ff;
+  --accent-soft: #c9cdff;
+  --accent-fill: #5b63f0;
+  --accent-fill-hover: #6c73f5;
+  --ok: #4ade9b;
+  --warn: #f6b94c;
+  --crit: #ff7a7a;
+  --series-fixed: #3b4670;
+}
+
 @layer base {
-  body {
-    @apply bg-slate-50 text-slate-900 antialiased;
+  html {
+    background: var(--bg);
   }
-  @media (prefers-color-scheme: dark) {
-    body {
-      @apply bg-slate-950 text-slate-100;
-    }
+  body {
+    @apply m-0 bg-bg font-sans text-body text-ink antialiased;
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+  :focus-visible {
+    outline: 2px solid #8b93ff;
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: rgba(139, 147, 255, 0.35);
+  }
+  table {
+    border-collapse: collapse;
   }
 }
 
 @layer components {
-  .card {
-    @apply rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900;
+  .panel {
+    @apply rounded-xl border border-line bg-panel;
   }
-  .input {
-    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900;
+  /* Étiquette en capitales à chasse fixe (titres de colonnes, sections du menu) */
+  .eyebrow {
+    @apply font-mono text-label uppercase text-ink-muted;
   }
+  .row-hover {
+    transition: background-color 0.12s;
+  }
+  .row-hover:hover {
+    background: rgba(255, 255, 255, 0.025);
+  }
+  .nav-link {
+    @apply flex h-11 items-center gap-3 rounded-lg px-3 font-medium text-ink-muted transition-colors;
+  }
+  .nav-link:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .nav-link[aria-current='page'] {
+    @apply bg-accent/14 text-accent-soft;
+  }
+
+  .field {
+    @apply h-10 w-full rounded-lg border border-line-strong bg-field px-3 text-body text-ink outline-none transition-colors placeholder:text-ink-muted/70 focus:border-accent;
+  }
+  .field-label {
+    @apply mb-1.5 block text-small text-ink-muted;
+  }
+
   .btn {
-    @apply inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50;
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-accent-fill px-4 font-medium text-white transition-colors hover:bg-accent-fill-hover disabled:cursor-not-allowed disabled:opacity-50;
   }
-  .btn-ghost {
-    @apply inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800;
+  .btn-secondary {
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-line-strong bg-transparent px-4 font-medium text-ink transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50;
   }
+  .btn-icon {
+    @apply grid h-10 w-10 place-items-center rounded-lg border border-line bg-panel text-ink transition-colors hover:bg-white/5;
+  }
+  .btn-link {
+    @apply inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 font-medium text-accent transition-colors hover:bg-white/5;
+  }
+}
+
+.live-dot {
+  @apply animate-live-pulse;
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
+  }
+}
+
+/* Barres de graphique : survol lisible sans bibliothèque */
+.bar-col:hover > .bar {
+  filter: brightness(1.2);
 }

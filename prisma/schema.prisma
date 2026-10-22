@@ -18,12 +18,14 @@ enum Period {
 }
 
 model Project {
-  id         String      @id @default(cuid())
-  slug       String      @unique
-  name       String
-  createdAt  DateTime    @default(now())
-  costEvents CostEvent[]
-  fixedCosts FixedCost[]
+  id           String        @id @default(cuid())
+  slug         String        @unique
+  name         String
+  createdAt    DateTime      @default(now())
+  costEvents   CostEvent[]
+  fixedCosts   FixedCost[]
+  deployments  Deployment[]
+  mrrSnapshots MrrSnapshot[]
 }
 
 // Un appel API facture (ou estime) emis par un SaaS.
@@ -65,4 +67,139 @@ model FixedCost {
   createdAt DateTime  @default(now())
 
   @@index([startsOn, endsOn])
+}
+
+// ---------------------------------------------------------------------------
+// Surveillance (sondes, deploiements, alertes). Tables additives : aucune donnee
+// existante n'est modifiee. Les sondes gardent leur etat recent EN MEMOIRE et
+// n'ecrivent qu'un cumul par heure (ProbeRollup) : une ecriture toutes les 2 min
+// empecherait Neon (plan gratuit) de se mettre en veille et epuiserait le quota
+// de calcul en ~17 jours.
+// ---------------------------------------------------------------------------
+
+enum DeployStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum AlertSeverity {
+  CRITICAL
+  WARNING
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+// Un site/API surveille (GET periodique : statut, latence, expiration du certificat).
+model Service {
+  id          String        @id @default(cuid())
+  slug        String        @unique
+  name        String
+  url         String
+  projectSlug String? // lien avec Project.slug (deploiements, couts)
+  enabled     Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  rollups     ProbeRollup[]
+}
+
+model ProbeRollup {
+  id            String    @id @default(cuid())
+  serviceId     String
+  service       Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  hour          DateTime // debut de l'heure (UTC)
+  checks        Int
+  failures      Int
+  avgMs         Int?
+  p95Ms         Int?
+  maxMs         Int?
+  certExpiresAt DateTime?
+
+  @@unique([serviceId, hour])
+  @@index([hour])
+}
+
+model Deployment {
+  id          String       @id @default(cuid())
+  externalId  String       @unique // ex: "<projet>:<id du run GitHub>" : permet RUNNING -> SUCCESS/FAILED
+  projectId   String
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  environment String // production | preview
+  status      DeployStatus
+  commitSha   String
+  message     String?
+  branch      String?
+  durationSec Int?
+  startedAt   DateTime
+  finishedAt  DateTime?
+  runUrl      String?
+  createdAt   DateTime     @default(now())
+
+  @@index([projectId, startedAt])
+  @@index([startedAt])
+}
+
+// fingerprint = cle de deduplication (ex: "service_down:tifo") : une seule alerte ouverte par fingerprint.
+model Alert {
+  id             String        @id @default(cuid())
+  fingerprint    String
+  rule           String
+  severity       AlertSeverity
+  status         AlertStatus   @default(OPEN)
+  title          String
+  description    String?
+  source         String?
+  openedAt       DateTime      @default(now())
+  acknowledgedAt DateTime?
+  resolvedAt     DateTime?
+  notifiedAt     DateTime?
+
+  @@index([status, openedAt])
+  @@index([fingerprint, status])
+}
+
+model AlertRule {
+  key      String        @id
+  label    String
+  severity AlertSeverity
+  enabled  Boolean       @default(true)
+  params   Json?
+}
+
+// Reglages cle/valeur (ex: budget mensuel en euros).
+model Setting {
+  key   String @id
+  value String
+}
+
+// Premieres briques des ecrans "Serveurs" et "Revenus" : schema pret, sources de donnees a brancher.
+model ServerMetric {
+  id         String   @id @default(cuid())
+  host       String
+  capturedAt DateTime @default(now())
+  cpuPct     Float?
+  memPct     Float?
+  diskPct    Float?
+  netOutMbps Float?
+  payload    Json? // ex: processus PM2
+
+  @@index([host, capturedAt])
+}
+
+model MrrSnapshot {
+  id             String   @id @default(cuid())
+  projectId      String?
+  project        Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  capturedOn     DateTime @db.Date
+  mrrEur         Decimal  @db.Decimal(12, 2)
+  subscribers    Int      @default(0)
+  newEur         Decimal  @default(0) @db.Decimal(12, 2)
+  expansionEur   Decimal  @default(0) @db.Decimal(12, 2)
+  contractionEur Decimal  @default(0) @db.Decimal(12, 2)
+  churnEur       Decimal  @default(0) @db.Decimal(12, 2)
+
+  @@index([capturedOn])
 }
