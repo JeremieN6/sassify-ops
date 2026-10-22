@@ -1,6 +1,6 @@
 # CLAUDE.md -- Sassify Ops
 
-Dashboard prive (mot de passe unique) pour suivre les couts des SaaS : appels API par projet/fournisseur + couts fixes. Prevu pour `ops.sassify.fr` sur le VPS Hostinger (PM2, nginx, `/srv/saas/ops`, port 3020).
+Dashboard prive (mot de passe unique) pour suivre les couts des SaaS : appels API par projet/fournisseur + couts fixes. En ligne sur `https://pilotage.sassify.fr` (VPS Hostinger : process PM2 `pilotage`, dossier `/srv/saas/pilotage`, port 3011 ; nginx `proxy_pass http://127.0.0.1:3011`). Le `.env` n'est pas versionne et doit etre cree a la main dans ce dossier.
 
 ## Stack
 Nuxt 3.21 + Prisma 6 + Neon Postgres + Tailwind. Versions epinglees comme prospector.
@@ -24,12 +24,13 @@ Nuxt 3.21 + Prisma 6 + Neon Postgres + Tailwind. Versions epinglees comme prospe
 - `npm install` plante (npm 10.9, `edgesOut`) sans `legacy-peer-deps` : voir `.npmrc`. Garder `npm ci` coherent avec ce reglage.
 - PM2 : `max_restarts` + `exp_backoff_restart_delay` pour eviter une boucle de crash qui sature disque/logs (incident prospector 25/09/2026).
 - `package.json` a `"type": "module"` : le fichier PM2 doit etre en `.cjs`.
+- 502 au premier deploiement (2026-10-22, voir `tasks/lessons.md`) : `ecosystem.config.cjs` doit refleter le vrai nom (`pilotage`), dossier (`/srv/saas/pilotage`) et port (`3011`, celui du `proxy_pass` nginx), et le `.env` non versionne doit exister dans le `cwd` sinon `node --env-file=.env` quitte avec `.env: not found`. Apres changement du fichier PM2 : `pm2 delete pilotage && pm2 start ecosystem.config.cjs && pm2 save` (un reload garde l'ancien cwd).
 - Windows : `pkill` ne tue pas les `node.exe` lances depuis Git Bash ; un serveur de test oublie verrouille `.output\...\query_engine-windows.dll.node` (EPERM au build). Lancer/arreter par PID avec PowerShell (`Start-Process -PassThru` / `Stop-Process`).
 - PowerShell 5.1 + cookie `Secure` : `Invoke-RestMethod` ne renvoie pas le cookie de session en HTTP, faire les tests d'API authentifiee depuis Node.
 - Neon gratuit se met en veille : la premiere requete apres inactivite peut depasser 3 s (d'ou le timeout client de 10 s).
 
 ## Deploiement (manuel pour l'instant)
-`git clone` dans `/srv/saas/ops`, creer `.env` (voir `.env.example`, `chmod 600`), `npm ci && npx prisma db push && npm run build`, `pm2 start ecosystem.config.cjs && pm2 save`, nginx + certbot (A uniquement, pas de AAAA), DNS `ops`.
+`git clone` dans `/srv/saas/pilotage`, creer `.env` (voir `.env.example`, `chmod 600`), `npm ci && npx prisma db push && npm run build`, `pm2 start ecosystem.config.cjs && pm2 save`, nginx + certbot (A uniquement, pas de AAAA), DNS `ops`.
 
 ## Etat
 - [x] Squelette, auth, ingestion, agregation, pages couts + couts fixes
@@ -37,7 +38,8 @@ Nuxt 3.21 + Prisma 6 + Neon Postgres + Tailwind. Versions epinglees comme prospe
 - [x] Calcul de cout LLM cote ops (Anthropic, OpenAI, Gemini) + clients branches dans plotline, tifo, skincareapp (2026-10-19, non commites dans ces repos)
 - [x] Telemetrie Google Places dans prospector (ecrite ; ne JAMAIS l'executer tant que l'utilisateur n'est pas rembourse)
 - [x] Repo GitHub `https://github.com/JeremieN6/sassify-ops.git`, branche `main`, commit initial `1751d58` pousse le 2026-10-22 (`.env` exclu ; l'utilisateur a son propre process de deploiement)
-- [ ] Deployer `ops` sur le VPS, puis definir `OPS_URL` + `OPS_INGEST_KEY` dans les `.env` de prospector, plotline, tifo, skincareapp et redemarrer leurs process PM2 (`--update-env`)
+- [x] Deploye sur `https://pilotage.sassify.fr` le 2026-10-22 (apres correction du 502 : `.env` absent, nom/cwd/port PM2, build incomplet). Verifie de l'exterieur : `/` -> 302 `/login`, `/login` 200, API protegee 401. Connexion avec le mot de passe admin non testee par l'assistant.
+- [ ] Definir (le deploiement est fait) `OPS_URL` + `OPS_INGEST_KEY` dans les `.env` de prospector, plotline, tifo, skincareapp et redemarrer leurs process PM2 (`--update-env`)
 - [ ] Prix a reverifier : modeles Gemini image (`summary`, pas verbatim) ; ajouter les modeles quand un nouveau modele apparait (banniere `unpriced`)
 - [ ] Collecteurs de reconciliation avec les API de facturation (Anthropic/OpenAI admin, Upstash, Google)
 - [ ] Blocs suivants : sante VPS + alertes, MRR Stripe, requetes par endpoint
