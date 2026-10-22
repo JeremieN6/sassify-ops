@@ -36,6 +36,7 @@ Nuxt 3.21 + Prisma 6 + Neon Postgres + Tailwind. Versions epinglees comme prospe
 - [x] Base Neon dediee (projet Neon `ops`, id `wispy-boat-81246396`, org Shiplab, aws-eu-central-1, pg17, URL pooler) + `.env` local genere + schema pousse + test de bout en bout OK (2026-10-19). `npm run demo` injecte des donnees fictives : a nettoyer apres usage (base de prod).
 - [x] Calcul de cout LLM cote ops (Anthropic, OpenAI, Gemini) + clients branches dans plotline, tifo, skincareapp (2026-10-19, non commites dans ces repos)
 - [x] Telemetrie Google Places dans prospector (ecrite ; ne JAMAIS l'executer tant que l'utilisateur n'est pas rembourse)
+- [x] Repo GitHub `https://github.com/JeremieN6/sassify-ops.git`, branche `main`, commit initial `1751d58` pousse le 2026-10-22 (`.env` exclu ; l'utilisateur a son propre process de deploiement)
 - [ ] Deployer `ops` sur le VPS, puis definir `OPS_URL` + `OPS_INGEST_KEY` dans les `.env` de prospector, plotline, tifo, skincareapp et redemarrer leurs process PM2 (`--update-env`)
 - [ ] Prix a reverifier : modeles Gemini image (`summary`, pas verbatim) ; ajouter les modeles quand un nouveau modele apparait (banniere `unpriced`)
 - [ ] Collecteurs de reconciliation avec les API de facturation (Anthropic/OpenAI admin, Upstash, Google)
