@@ -1,0 +1,47 @@
+name: Deploy Pilotage to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REMOTE_DIR: /srv/saas/pilotage
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add SSH key to agent
+        uses: webfactory/ssh-agent@v0.6.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy on VPS
+        run: |
+          ssh -o StrictHostKeyChecking=yes ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+          set -euo pipefail
+          cd /srv/saas/pilotage || exit 1
+          git fetch --all --prune
+          git reset --hard origin/main
+          npm install
+          npx prisma generate
+          rm -rf .output
+          npm run build
+          if pm2 describe pilotage > /dev/null 2>&1; then
+            pm2 reload pilotage --update-env
+          else
+            pm2 start ecosystem.config.cjs
+          fi
+          EOF
