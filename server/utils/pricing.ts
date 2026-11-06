@@ -69,6 +69,16 @@ const PRICES: PriceEntry[] = [
     confidence: 'official-page',
     verifiedOn: VERIFIED
   },
+  {
+    // Standard : texte 5 / texte en cache 1.25 / image en entree 8 / image en sortie 30 (sortie texte non facturee).
+    // L'image en cache (2 $) n'a pas de champ dedie : elle ne sert qu'avec l'API Responses, non utilisee par tifo.
+    // Les variantes gpt-image-2.5-* / 2.6-* ont les memes tarifs mais ne sont PAS couvertes (nom different).
+    provider: 'openai',
+    model: 'gpt-image-2',
+    rates: { input: 5, output: 0, cacheRead: 1.25, imageInput: 8, imageOutput: 30 },
+    confidence: 'official-page',
+    verifiedOn: '2026-11-06'
+  },
 
   // Gemini - https://ai.google.dev/gemini-api/docs/pricing (Standard, palier payant)
   {
