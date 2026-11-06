@@ -33,7 +33,7 @@ Gestion des services surveilles : `GET/POST /api/services`, `DELETE /api/service
 - Auth : cookie signe HMAC (`server/utils/auth.ts`), toute l'API sauf login/ingest protegee par `server/middleware/auth.ts`, rate limit login en memoire.
 
 ## Clients de telemetrie (copies a garder synchronisees)
-- `clients/ops-cost.ts` -> `tifo/lib/ops-cost.ts`, `skincareapp/lib/ops-cost.ts` (`instrumentAnthropic`, `instrumentOpenAI`, `trackCost`).
+- `clients/ops-cost.ts` -> `tifo/lib/ops-cost.ts`, `skincareapp/lib/ops-cost.ts` (`instrumentAnthropic`, `instrumentOpenAI`, `trackCost`, et pour les SaaS qui appellent l'API en `fetch` brut : `trackAnthropicResponse`, `trackOpenAIChatResponse`, ajoutes le 2026-11-06 ; les copies de tifo et skincareapp ne les ont pas encore, a resynchroniser).
 - `clients/ops-cost.plotline.js` -> `plotline/server/utils/opsCost.js` + plugin `plotline/server/plugins/ops-cost.js` (patch de prototype Anthropic + Gemini).
 - Prospector a son propre `server/utils/ops-cost.ts` (Google Places, montant fixe par requete).
 - Regles : fire-and-forget, timeout 10 s (demarrage a froid de Neon), circuit breaker, jamais d'erreur remontee, sans effet sans `OPS_URL`/`OPS_INGEST_KEY`. Non couvert : streaming, Interactions/Veo/Kling/ElevenLabs.

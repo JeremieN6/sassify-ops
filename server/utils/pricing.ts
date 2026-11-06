@@ -46,6 +46,22 @@ const PRICES: PriceEntry[] = [
   { provider: 'anthropic', model: 'claude-sonnet-4-6', rates: SONNET_4, confidence: 'official-page', verifiedOn: VERIFIED },
   { provider: 'anthropic', model: 'claude-sonnet-4-20250514', rates: SONNET_4, confidence: 'official-page', verifiedOn: VERIFIED },
   { provider: 'anthropic', model: 'claude-sonnet-4-0', rates: SONNET_4, confidence: 'official-page', verifiedOn: VERIFIED },
+  // Sonnet 5.5 : pas de supplement long contexte ; lecture de cache = 0.05x l'entree (note 2 de la page). Verifie le 2026-11-06.
+  {
+    provider: 'anthropic',
+    model: 'claude-sonnet-5-5',
+    rates: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+    confidence: 'official-page',
+    verifiedOn: '2026-11-06'
+  },
+  // Haiku 4.5 : l'identifiant date "claude-haiku-4-5-20251001" est reconnu par le suffixe de date. Retrait prevu au plus tot le 2026-10-15 (page des depreciations).
+  {
+    provider: 'anthropic',
+    model: 'claude-haiku-4-5',
+    rates: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+    confidence: 'official-page',
+    verifiedOn: '2026-11-06'
+  },
   {
     provider: 'anthropic',
     model: 'claude-opus-4-5',
@@ -61,6 +77,13 @@ const PRICES: PriceEntry[] = [
     rates: { input: 0.4, output: 1.6, cacheRead: 0.1 },
     confidence: 'official-page',
     verifiedOn: VERIFIED
+  },
+  {
+    provider: 'openai',
+    model: 'gpt-4o-mini',
+    rates: { input: 0.15, output: 0.6, cacheRead: 0.075 },
+    confidence: 'official-page',
+    verifiedOn: '2026-11-06'
   },
   {
     provider: 'openai',

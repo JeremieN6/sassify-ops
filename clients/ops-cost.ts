@@ -108,28 +108,86 @@ function patchMethod(target: Obj, name: string, onResult: (result: unknown, args
   target[name] = wrapped
 }
 
+// Extraction de l'usage depuis une reponse Anthropic /v1/messages (partagee par le SDK et par fetch).
+function anthropicLlm(message: unknown, request: unknown): LlmUsage {
+  const usage = obj(obj(message).usage)
+  const model = str(obj(message).model) ?? str(obj(request).model) ?? 'unknown'
+  if (Object.keys(usage).length === 0) {
+    return { model }
+  }
+  return {
+    model,
+    inputTokens: num(usage.input_tokens),
+    outputTokens: num(usage.output_tokens),
+    cacheReadTokens: num(usage.cache_read_input_tokens),
+    cacheWriteTokens: num(usage.cache_creation_input_tokens)
+  }
+}
+
+// Extraction de l'usage depuis une reponse OpenAI /v1/chat/completions (partagee par le SDK et par fetch).
+function openaiChatLlm(completion: unknown, request: unknown): LlmUsage {
+  const usage = obj(obj(completion).usage)
+  const model = str(obj(completion).model) ?? str(obj(request).model) ?? 'unknown'
+  if (Object.keys(usage).length === 0) {
+    return { model }
+  }
+  // prompt_tokens INCLUT les tokens en cache : on les separe pour les facturer au bon tarif.
+  const cached = num(obj(usage.prompt_tokens_details).cached_tokens) ?? 0
+  const prompt = num(usage.prompt_tokens) ?? 0
+  return {
+    model,
+    inputTokens: Math.max(0, prompt - cached),
+    outputTokens: num(usage.completion_tokens),
+    cacheReadTokens: cached
+  }
+}
+
+// Une reponse d'erreur (corps { type: 'error' } ou { error }) ou vide ne doit produire aucun evenement.
+const isErrorBody = (body: unknown) => {
+  if (!body || typeof body !== 'object') {
+    return true // corps absent ou illisible : rien a facturer, et pas de modele "unknown" parasite
+  }
+  const value = obj(body)
+  return value.type === 'error' || value.error !== undefined
+}
+
+/**
+ * Pour les SaaS qui appellent l'API Anthropic en `fetch` brut (sans le SDK).
+ * A appeler avec le corps JSON DEJA PARSE d'une reponse reussie, et (si possible) le corps de la requete :
+ *   const data = await response.json()
+ *   trackAnthropicResponse('clippeak', data, requestBody)
+ * Ne lit jamais le flux : une requete en streaming (stream: true) est ignoree. Ne leve jamais, n'attend rien.
+ */
+export function trackAnthropicResponse(project: string, responseBody: unknown, requestBody?: unknown, meta?: Record<string, unknown>) {
+  try {
+    if (obj(requestBody).stream === true || isErrorBody(responseBody)) {
+      return
+    }
+    void trackCost({ project, provider: 'anthropic', llm: anthropicLlm(responseBody, requestBody), meta })
+  } catch {
+    // la telemetrie n'a jamais le droit de casser l'app
+  }
+}
+
+/** Idem pour OpenAI /v1/chat/completions appele en `fetch` brut. */
+export function trackOpenAIChatResponse(project: string, responseBody: unknown, requestBody?: unknown, meta?: Record<string, unknown>) {
+  try {
+    if (obj(requestBody).stream === true || isErrorBody(responseBody)) {
+      return
+    }
+    void trackCost({ project, provider: 'openai', llm: openaiChatLlm(responseBody, requestBody), meta })
+  } catch {
+    // la telemetrie n'a jamais le droit de casser l'app
+  }
+}
+
 /** Anthropic : observe client.messages.create (hors streaming). */
 export function instrumentAnthropic<T extends object>(client: T, project: string): T {
   patchMethod(obj(obj(client).messages), 'create', (message, args) => {
     if (obj(args[0]).stream === true) {
       return
     }
-    const usage = obj(obj(message).usage)
-    const model = str(obj(message).model) ?? str(obj(args[0]).model) ?? 'unknown'
-    const hasUsage = Object.keys(usage).length > 0
-    void trackCost({
-      project,
-      provider: 'anthropic',
-      llm: hasUsage
-        ? {
-            model,
-            inputTokens: num(usage.input_tokens),
-            outputTokens: num(usage.output_tokens),
-            cacheReadTokens: num(usage.cache_read_input_tokens),
-            cacheWriteTokens: num(usage.cache_creation_input_tokens)
-          }
-        : { model }
-    })
+    void trackCost({ project, provider: 'anthropic', llm: anthropicLlm(message, args[0]) })
   })
   return client
 }
@@ -142,25 +200,7 @@ export function instrumentOpenAI<T extends object>(client: T, project: string): 
     if (obj(args[0]).stream === true) {
       return
     }
-    const usage = obj(obj(completion).usage)
-    const model = str(obj(completion).model) ?? str(obj(args[0]).model) ?? 'unknown'
-    if (Object.keys(usage).length === 0) {
-      void trackCost({ project, provider: 'openai', llm: { model } })
-      return
-    }
-    // prompt_tokens INCLUT les tokens en cache : on les separe pour les facturer au bon tarif.
-    const cached = num(obj(usage.prompt_tokens_details).cached_tokens) ?? 0
-    const prompt = num(usage.prompt_tokens) ?? 0
-    void trackCost({
-      project,
-      provider: 'openai',
-      llm: {
-        model,
-        inputTokens: Math.max(0, prompt - cached),
-        outputTokens: num(usage.completion_tokens),
-        cacheReadTokens: cached
-      }
-    })
+    void trackCost({ project, provider: 'openai', llm: openaiChatLlm(completion, args[0]) })
   })
 
   const trackImage = (response: unknown, args: unknown[]) => {
