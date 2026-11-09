@@ -102,7 +102,7 @@ test('readAccountMap keeps valid slug -> acct_ pairs only', () => {
 import { syncStripeMrr } from '../server/utils/stripeSync.ts'
 
 test('syncStripeMrr queries each account with Stripe-Context, paginates, isolates a failing account and never leaks the key', async () => {
-  const calls: { account: string; url: string; auth: string }[] = []
+  const calls: { account: string; url: string; auth: string; version: string }[] = []
   const writes: { op: string; data?: any }[] = []
   const KEY = 'rk_live_TESTKEY123'
   const g = globalThis as any
@@ -116,8 +116,8 @@ test('syncStripeMrr queries each account with Stripe-Context, paginates, isolate
   const monthly = (id: string, amount: number) => ({ id, status: 'active', items: { data: [{ quantity: 1, price: { unit_amount: amount, currency: 'eur', recurring: { interval: 'month', interval_count: 1 }, product: 'prod_x' } }] } })
   g.fetch = async (url: string, init: any) => {
     const account = init.headers['stripe-context']
-    calls.push({ account, url, auth: init.headers.authorization })
-    if (account === 'acct_B') return { ok: false, status: 403, json: async () => ({ error: { type: 'invalid_request_error' } }) }
+    calls.push({ account, url, auth: init.headers.authorization, version: init.headers['stripe-version'] })
+    if (account === 'acct_B') return { ok: false, status: 403, json: async () => ({ error: { type: 'invalid_request_error', message: 'Invalid API Key provided: rk_org_live_********abcd' } }) }
     if (account === 'acct_A' && !url.includes('starting_after')) return { ok: true, json: async () => ({ has_more: true, data: [monthly('sub_1', 1000)] }) }
     if (account === 'acct_A') return { ok: true, json: async () => ({ has_more: false, data: [monthly('sub_2', 2500)] }) }
     return { ok: true, json: async () => ({ has_more: false, data: [] }) }
@@ -130,10 +130,13 @@ test('syncStripeMrr queries each account with Stripe-Context, paginates, isolate
     assert.equal(bySlug.clippeak.subscribers, 2)
     assert.equal(bySlug.stellara.ok, false)
     assert.match(bySlug.stellara.error!, /403/)
+    assert.match(bySlug.stellara.error!, /invalid_request_error : Invalid API Key/)
+    assert.ok(!bySlug.stellara.error!.includes('rk_org'), bySlug.stellara.error)
     assert.equal(bySlug.tifo.ok, true)
     assert.equal(bySlug.tifo.mrrEur, 0)
     assert.equal(calls.filter((c) => c.account === 'acct_A').length, 2)
     assert.ok(calls.every((c) => c.auth === `Bearer ${KEY}`))
+    assert.ok(calls.every((c) => c.version === '2025-09-30.clover'))
     assert.ok(!JSON.stringify(result).includes(KEY))
     const created = writes.filter((w) => w.op === 'create').map((w) => w.data.projectId).sort()
     assert.deepEqual(created, ['id-clippeak', 'id-tifo'])

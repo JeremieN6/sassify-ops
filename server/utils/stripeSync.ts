@@ -8,6 +8,8 @@
 import { computeMrr, type StripeSubscription } from './stripeMrr'
 
 const BASE = 'https://api.stripe.com/v1'
+// Une cle d'organisation EXIGE un en-tete de version d'API (sinon HTTP 400). Version fixee : le format des reponses ne change pas sous nos pieds.
+const STRIPE_VERSION = '2025-09-30.clover'
 const MAX_PAGES = 50
 
 type StripeList<T> = { data: T[]; has_more: boolean }
@@ -16,18 +18,21 @@ export type AccountMap = Record<string, string>
 
 async function stripeGet<T>(key: string, account: string, path: string, params: Record<string, string>): Promise<StripeList<T>> {
   const response = await fetch(`${BASE}${path}?${new URLSearchParams(params).toString()}`, {
-    headers: { authorization: `Bearer ${key}`, 'stripe-context': account },
+    headers: { authorization: `Bearer ${key}`, 'stripe-context': account, 'stripe-version': STRIPE_VERSION },
     signal: AbortSignal.timeout(20_000)
   })
   if (!response.ok) {
-    // Le corps d'erreur de Stripe ne contient pas la cle ; on ne garde que le code HTTP et le type.
-    let kind = ''
+    // On garde le code HTTP, le type et le message de Stripe (utile pour diagnostiquer), en masquant tout ce qui ressemble
+    // a une cle (une erreur d'authentification peut en citer la fin) et en tronquant.
+    let detail = ''
     try {
-      kind = ((await response.json()) as { error?: { type?: string } }).error?.type ?? ''
+      const error = ((await response.json()) as { error?: { type?: string; message?: string } }).error
+      detail = [error?.type, error?.message].filter(Boolean).join(' : ')
     } catch {
       // corps illisible
     }
-    throw new Error(`Stripe HTTP ${response.status}${kind ? ` (${kind})` : ''}`)
+    const safe = detail.replace(/(?:rk|sk|pk)_[A-Za-z0-9_*]+/g, '[cle]').slice(0, 200)
+    throw new Error(`Stripe HTTP ${response.status}${safe ? ` (${safe})` : ''}`)
   }
   return (await response.json()) as StripeList<T>
 }
