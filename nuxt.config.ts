@@ -11,8 +11,8 @@ export default defineNuxtConfig({
     usdToEur: '0.92',
     // Revenus : cle Stripe D'ORGANISATION restreinte (Abonnements : lecture), vide = pas de synchronisation.
     stripeReadKey: '',
-    // Un compte Stripe par projet (JSON slug -> identifiant de compte ; ce ne sont pas des secrets). Surchargeable par NUXT_STRIPE_ACCOUNTS.
-    stripeAccounts: '{"clippeak":"acct_1UWPUgIrL7WyQoMK","csvtoppt":"acct_1SdZHKIEcI1bnhEJ","flysmart":"acct_1TqDM2Em55Vg7Ey7","previewfast":"acct_1Sh5n9EnS6sS4RqE","skinalyze":"acct_1TjG8vIjyFCfdPFU","stellara":"acct_1TZdWxISmyrA3fUe","tifo":"acct_1TVwCFRKl990g9dq"}',
+    // Un compte Stripe par projet (JSON slug -> identifiant de compte ; ce ne sont pas des secrets). PreviewFast (projet abandonne) volontairement absent. Surchargeable par NUXT_STRIPE_ACCOUNTS.
+    stripeAccounts: '{"clippeak":"acct_1UWPUgIrL7WyQoMK","csvtoppt":"acct_1SdZHKIEcI1bnhEJ","flysmart":"acct_1TqDM2Em55Vg7Ey7","skinalyze":"acct_1TjG8vIjyFCfdPFU","stellara":"acct_1TZdWxISmyrA3fUe","tifo":"acct_1TVwCFRKl990g9dq"}',
     // Surveillance : vide = actif en production seulement ; "true"/"false" force.
     probesEnabled: '',
     probeIntervalSec: '120',
