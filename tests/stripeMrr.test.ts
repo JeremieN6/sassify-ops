@@ -147,3 +147,28 @@ test('syncStripeMrr queries each account with Stripe-Context, paginates, isolate
     delete g.prisma
   }
 })
+
+import { resolveCapturedAt, serverMetricSchema } from '../server/utils/serverIngest.ts'
+
+test('server metric schema accepts the agent payload and rejects malformed ones', () => {
+  const ok = serverMetricSchema.safeParse({
+    host: 'srv1257265', cpuPct: 12.5, memPct: 60, diskPct: 47, netOutMbps: 0.4,
+    processes: [{ name: 'web', cpu: 1.3, memMb: 100, restarts: 3, uptime: '2 j 5 h', status: 'online' }]
+  })
+  assert.equal(ok.success, true)
+  assert.equal(serverMetricSchema.safeParse({ host: 'srv1', processes: [] }).success, true) // mesures partielles autorisees
+  assert.equal(serverMetricSchema.safeParse({ host: 'srv1', cpuPct: null, memPct: null }).success, true)
+  assert.equal(serverMetricSchema.safeParse({ host: 'Bad Host!', cpuPct: 1 }).success, false)
+  assert.equal(serverMetricSchema.safeParse({ host: 'srv1', cpuPct: 150 }).success, false)
+  assert.equal(serverMetricSchema.safeParse({ host: 'srv1', processes: [{ name: '' }] }).success, false)
+  assert.equal(serverMetricSchema.safeParse({ host: 'srv1', processes: Array.from({ length: 81 }, (_, i) => ({ name: `p${i}` })) }).success, false)
+})
+
+test('resolveCapturedAt keeps a plausible agent date and falls back to now otherwise', () => {
+  const now = new Date('2026-11-09T12:00:00Z')
+  assert.equal(resolveCapturedAt(undefined, now).getTime(), now.getTime())
+  assert.equal(resolveCapturedAt('2026-11-09T11:58:00Z', now).toISOString(), '2026-11-09T11:58:00.000Z')
+  assert.equal(resolveCapturedAt('2026-11-09T11:00:00Z', now).getTime(), now.getTime()) // trop vieux
+  assert.equal(resolveCapturedAt('2026-11-09T13:00:00Z', now).getTime(), now.getTime()) // dans le futur
+  assert.equal(resolveCapturedAt('pas une date', now).getTime(), now.getTime())
+})

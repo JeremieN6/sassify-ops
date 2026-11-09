@@ -1,0 +1,16 @@
+[Unit]
+Description=Sassify Ops : mesures du serveur (CPU, memoire, disque, reseau, PM2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# OPS_URL et OPS_INGEST_KEY (fichier root en 600, cree par install.sh)
+EnvironmentFile=/etc/pilotage-agent.env
+# pm2 retrouve son daemon (celui de root) grace a HOME
+Environment=HOME=/root
+ExecStart=/usr/bin/python3 /srv/saas/pilotage/agent/pilotage_agent.py
+TimeoutStartSec=60
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
