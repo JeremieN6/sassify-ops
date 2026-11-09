@@ -172,3 +172,18 @@ test('resolveCapturedAt keeps a plausible agent date and falls back to now other
   assert.equal(resolveCapturedAt('2026-11-09T13:00:00Z', now).getTime(), now.getTime()) // dans le futur
   assert.equal(resolveCapturedAt('pas une date', now).getTime(), now.getTime())
 })
+
+import { lastKnownProcesses } from '../server/utils/serverIngest.ts'
+
+test('lastKnownProcesses returns the newest process list and ignores rows without one', () => {
+  const rows = [
+    { payload: { processes: [{ name: 'old' }] } },
+    { payload: { processes: [{ name: 'recent' }] } },
+    { payload: null },
+    { payload: {} }
+  ]
+  assert.deepEqual(lastKnownProcesses(rows), [{ name: 'recent' }])
+  assert.deepEqual(lastKnownProcesses([{ payload: null }]), [])
+  assert.deepEqual(lastKnownProcesses([]), [])
+  assert.equal(serverMetricSchema.safeParse({ host: 'srv1', cpuPct: 1 }).success, true) // sans processus : valide
+})

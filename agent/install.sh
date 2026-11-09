@@ -13,7 +13,8 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_SRC="${PILOTAGE_ENV:-$DIR/../.env}"
 ENV_DST=/etc/pilotage-agent.env
-URL="${OPS_URL:-https://pilotage.sassify.fr}"
+# Envoi LOCAL (pilotage ecoute sur 127.0.0.1:3011 derriere nginx) : pas de chiffrement TLS a calculer, donc moins de CPU.
+URL="${OPS_URL:-http://127.0.0.1:3011}"
 
 [ -f "$ENV_SRC" ] || { echo "Fichier introuvable : $ENV_SRC"; exit 1; }
 command -v python3 >/dev/null || { echo "python3 est requis."; exit 1; }
