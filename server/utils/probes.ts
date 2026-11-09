@@ -64,7 +64,9 @@ const DEFAULT_SERVICES: Omit<ServiceDef, 'id'>[] = [
   { slug: 'stellara', name: 'Stellara', url: 'https://stellara.sassify.fr/', projectSlug: 'stellara' },
   { slug: 'clippeak', name: 'Clippeak', url: 'https://clippeak.sassify.fr/', projectSlug: 'clippeak' },
   { slug: 'wedding-quizz', name: 'Wedding Quizz', url: 'https://wedding-quizz.sassify.fr/', projectSlug: 'wedding-quizz' },
-  { slug: 'snapui', name: 'SnapUI', url: 'https://snapui.sassify.fr/', projectSlug: 'snapui' }
+  { slug: 'snapui', name: 'SnapUI', url: 'https://snapui.sassify.fr/', projectSlug: 'snapui' },
+  // csvtoppt.sassify.fr redirige (301) vers le domaine propre : on surveille directement ce dernier.
+  { slug: 'csvtoppt', name: 'CSVtoPPT', url: 'https://csvtoppt.fr/', projectSlug: 'csvtoppt' }
 ]
 
 // Evite d'inonder les logs (lecon de l'incident prospector-worker) : un message identique au plus toutes les 10 min.
