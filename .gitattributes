@@ -1,0 +1,4 @@
+agent/*.sh text eol=lf
+agent/*.service text eol=lf
+agent/*.timer text eol=lf
+agent/*.py text eol=lf
