@@ -103,6 +103,21 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(set(payload), {"host", "cpuPct", "memPct", "diskPct", "netOutMbps", "processes"})
         self.assertEqual(payload["host"], "srv1")
 
+    def test_processes_key_is_absent_when_pm2_was_not_read(self):
+        payload = agent.build_payload("srv1", 1.0, 2.0, 3.0, 0.1, None)
+        self.assertNotIn("processes", payload)
+        self.assertEqual(agent.build_payload("srv1", 1.0, 2.0, 3.0, 0.1, [])["processes"], [])
+
+
+class Pm2ScheduleTests(unittest.TestCase):
+    def test_reads_pm2_once_every_n_minutes(self):
+        hits = [m for m in range(60) if agent.should_collect_pm2(m * 60 + 17, 5)]
+        self.assertEqual(hits, [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55])
+
+    def test_every_one_minute_or_less_always_reads(self):
+        self.assertTrue(all(agent.should_collect_pm2(m * 60, 1) for m in range(10)))
+        self.assertTrue(agent.should_collect_pm2(61, 0))
+
 
 if __name__ == "__main__":
     unittest.main()

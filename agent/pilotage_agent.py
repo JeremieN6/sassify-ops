@@ -10,6 +10,7 @@ Configuration (variables d'environnement, fichier /etc/pilotage-agent.env en 600
   OPS_INGEST_KEY    la meme valeur que NUXT_INGEST_KEY cote pilotage
   PILOTAGE_HOST     (optionnel) nom de la machine ; par defaut le hostname en minuscules
   PM2_BIN           (optionnel) chemin de pm2 ; par defaut cherche dans le PATH puis /usr/bin/pm2
+  PM2_EVERY_MIN     (optionnel) l'etat PM2 (la partie la plus couteuse : ~0,2 s de CPU) n'est lu qu'une minute sur N ; defaut 5
 
 Regle d'or : ne jamais bruiter ni casser le serveur. Aucune ecriture hors stdout/stderr, aucun etat conserve,
 un echec d'envoi est simplement journalise (le prochain passage reessaie).
@@ -153,15 +154,24 @@ def parse_pm2(jlist_text, now_ms):
     return processes[:80]
 
 
+def should_collect_pm2(now_seconds, every_minutes):
+    """Sans etat : l'etat PM2 n'est lu que lorsque la minute courante est un multiple de N (une fois sur N passages)."""
+    if every_minutes <= 1:
+        return True
+    return int(now_seconds // 60) % every_minutes == 0
+
+
 def build_payload(host, cpu, mem, disk, net, processes):
-    return {
+    payload = {
         "host": host,
         "cpuPct": cpu,
         "memPct": mem,
         "diskPct": disk,
         "netOutMbps": net,
-        "processes": processes,
     }
+    if processes is not None:  # absent = non lu cette fois ; l'ecran garde la derniere liste connue
+        payload["processes"] = processes
+    return payload
 
 
 # ---------- lecture du systeme et envoi ----------
@@ -187,7 +197,7 @@ def collect_pm2():
         return []
 
 
-def collect():
+def collect(include_pm2):
     cpu_before = parse_cpu_times(read_file("/proc/stat"))
     net_before = parse_net_tx_bytes(read_file("/proc/net/dev"))
     started = time.monotonic()
@@ -202,7 +212,7 @@ def collect():
         "mem": parse_mem_percent(read_file("/proc/meminfo")),
         "disk": disk_percent(stat.f_blocks, stat.f_bfree, stat.f_bavail),
         "net": net_mbps(net_before, net_after, elapsed),
-        "processes": collect_pm2(),
+        "processes": collect_pm2() if include_pm2 else None,
     }
 
 
@@ -225,7 +235,13 @@ def main():
         return 2
 
     host = (os.environ.get("PILOTAGE_HOST") or socket.gethostname()).strip().lower()
-    measures = collect()
+    try:
+        every = int(os.environ.get("PM2_EVERY_MIN", "5"))
+    except ValueError:
+        every = 5
+    # --dry-run lit toujours PM2 (diagnostic) ; --with-pm2 force aussi la lecture.
+    include_pm2 = "--dry-run" in sys.argv or "--with-pm2" in sys.argv or should_collect_pm2(time.time(), every)
+    measures = collect(include_pm2)
     payload = build_payload(host, measures["cpu"], measures["mem"], measures["disk"], measures["net"], measures["processes"])
 
     if "--dry-run" in sys.argv:
@@ -234,7 +250,7 @@ def main():
 
     try:
         status = post(url, key, payload)
-        print(f"pilotage-agent: envoye ({status}) cpu={payload['cpuPct']} mem={payload['memPct']} disque={payload['diskPct']} processus={len(payload['processes'])}")
+        print(f"pilotage-agent: envoye ({status}) cpu={payload['cpuPct']} mem={payload['memPct']} disque={payload['diskPct']} processus={len(payload['processes']) if 'processes' in payload else 'non lus'}")
         return 0
     except Exception as error:
         # Jamais le contenu de la reponse ni la cle : seulement le type d'erreur.

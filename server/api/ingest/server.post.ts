@@ -25,7 +25,7 @@ export default defineEventHandler(async (event) => {
       memPct: metric.memPct ?? null,
       diskPct: metric.diskPct ?? null,
       netOutMbps: metric.netOutMbps ?? null,
-      payload: { processes: metric.processes }
+      payload: metric.processes ? { processes: metric.processes } : undefined
     }
   })
 

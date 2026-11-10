@@ -18,7 +18,8 @@ export const serverMetricSchema = z.object({
   memPct: pct.nullable().optional(),
   diskPct: pct.nullable().optional(),
   netOutMbps: z.number().min(0).max(100_000).nullable().optional(),
-  processes: z.array(processSchema).max(80).default([]),
+  // Absent = l'agent n'a pas lu PM2 cette fois (il ne le fait qu'une minute sur 5) : on conserve la derniere liste connue.
+  processes: z.array(processSchema).max(80).optional(),
   capturedAt: z.string().datetime().optional()
 })
 
@@ -34,4 +35,15 @@ export function resolveCapturedAt(input: string | undefined, now: Date = new Dat
   const at = new Date(input)
   const age = now.getTime() - at.getTime()
   return Number.isNaN(at.getTime()) || age < -60_000 || age > 10 * 60_000 ? now : at
+}
+
+// Liste de processus de la mesure la plus recente qui en contient une (l'agent ne lit PM2 qu'une minute sur 5).
+export function lastKnownProcesses(rows: { payload: unknown }[]): unknown[] {
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const payload = rows[index].payload as { processes?: unknown } | null
+    if (payload && Array.isArray(payload.processes)) {
+      return payload.processes
+    }
+  }
+  return []
 }

@@ -11,6 +11,9 @@ EnvironmentFile=/etc/pilotage-agent.env
 Environment=HOME=/root
 ExecStart=/usr/bin/python3 /srv/saas/pilotage/agent/pilotage_agent.py
 TimeoutStartSec=60
-Nice=10
+# Ne s'execute que quand le CPU / le disque sont libres : ne peut pas ralentir les applications.
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+Nice=19
 NoNewPrivileges=true
 PrivateTmp=true
