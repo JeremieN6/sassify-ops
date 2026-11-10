@@ -59,7 +59,7 @@ Gestion des services surveilles : `GET/POST /api/services`, `DELETE /api/service
 - Logique pure testee : `server/utils/uptime.ts`, `server/utils/pricing.ts` (tests dans le scratchpad de session, a recreer au besoin avec `tsx`).
 
 ## Deploiement
-Workflow GitHub Actions `.github/workflows/deploy.yml` (push sur `main` -> `git reset --hard`, `npm install`, `prisma generate`, `rm -rf .output`, build, `pm2 reload pilotage`). Premiere installation : `git clone` dans `/srv/saas/pilotage`, `.env` (voir `.env.example`, `chmod 600`), `npm ci && npx prisma db push && npm run build`, `pm2 start ecosystem.config.cjs && pm2 save`, nginx + certbot (A uniquement, pas de AAAA).
+Workflow GitHub Actions `.github/workflows/deploy.yml` (push sur `main`, SAUF changements limites a `*.md`, `tasks/`, `tests/`, `.gitattributes` (`paths-ignore`, 2026-11-10 : chaque deploiement fait un build sur le VPS = pic de CPU de 1 a 2 minutes, a eviter pour de simples notes ; `workflow_dispatch` reste possible a la main) -> `git reset --hard`, `npm install`, `prisma generate`, `rm -rf .output`, build, `pm2 reload pilotage`). Premiere installation : `git clone` dans `/srv/saas/pilotage`, `.env` (voir `.env.example`, `chmod 600`), `npm ci && npx prisma db push && npm run build`, `pm2 start ecosystem.config.cjs && pm2 save`, nginx + certbot (A uniquement, pas de AAAA).
 
 ## Etat
 - [x] Squelette, auth, ingestion, agregation, pages couts + couts fixes ; calcul de cout LLM cote ops ; clients de telemetrie pousses dans plotline (`2eb8cf2`), skincareapp (`88bb651`), tifo (`004c303`)

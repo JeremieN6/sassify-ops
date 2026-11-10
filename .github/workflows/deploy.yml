@@ -3,6 +3,13 @@ name: Deploy Pilotage to Production
 on:
   push:
     branches: [main]
+    # Un changement de notes ou de tests ne doit pas relancer un build sur le VPS (pic de CPU de 1 a 2 minutes) :
+    # rien de ce qui est ignore ici n'est execute en production. L'agent (agent/) reste deploye.
+    paths-ignore:
+      - '**/*.md'
+      - 'tasks/**'
+      - 'tests/**'
+      - '.gitattributes'
   workflow_dispatch:
 
 env:
