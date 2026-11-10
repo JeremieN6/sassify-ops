@@ -26,6 +26,7 @@ export type StripeSubscription = {
   status: string
   created?: number // secondes Unix
   canceled_at?: number | null
+  customer?: string | { id?: string } | null
   cancel_at_period_end?: boolean
   current_period_end?: number | null // anciennes versions de l'API ; sinon sur chaque element (items.data[].current_period_end)
   metadata?: Record<string, string> | null
@@ -212,6 +213,7 @@ export type DescribedSubscription = {
   canceledAt: Date | null
   cancelAtPeriodEnd: boolean
   currentPeriodEnd: Date | null
+  customerLabel?: string | null // renseigne par la synchro (necessite le droit Stripe "Customers : lecture")
 }
 
 const toDate = (seconds: number | null | undefined) => (typeof seconds === 'number' && seconds > 0 ? new Date(seconds * 1000) : null)

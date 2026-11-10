@@ -29,11 +29,25 @@ export type SubscriptionRow = {
   quantity: number
   cancelAtPeriodEnd: boolean
   currentPeriodEnd: Date | null
+  createdAt?: Date
+  customerLabel?: string | null
 }
 export type ProjectRef = { id: string; slug: string; name: string }
 
 export type MovementTotals = { newEur: number; expansionEur: number; contractionEur: number; churnEur: number }
 export type PlanLine = { name: string; subscribers: number; priceEur: number; mrrEur: number }
+export type RecentSubscription = {
+  client: string | null // nom du client ou e-mail masque ; null = non identifie (droit Stripe "Customers : lecture" absent)
+  projectSlug: string
+  projectName: string
+  color: string
+  plan: string
+  amountEur: number
+  createdOn: string // YYYY-MM-DD
+  status: string
+  statusLabel: string
+  tone: 'ok' | 'warn' | 'crit' | 'muted'
+}
 export type WatchItem = { kind: 'crit' | 'warn'; title: string; projectSlug: string; projectName: string; color: string; desc: string }
 
 export type ProjectRevenue = {
@@ -59,6 +73,7 @@ export type RevenuePayload = {
   months: string[] // 12 mois (YYYY-MM), alignes sur `monthly`
   projects: ProjectRevenue[]
   watch: WatchItem[] // a surveiller : paiements en retard, annulations prevues
+  recent: RecentSubscription[] // derniers abonnements (10 maximum)
   movementDays: number // duree reellement couverte par les mouvements (<= 30)
   totals: {
     mrrEur: number
@@ -127,6 +142,7 @@ export function buildRevenue(rows: SnapshotRow[], projects: ProjectRef[], subscr
       months: [],
       projects: [],
       watch: [],
+      recent: [],
       movementDays: 0,
       totals: {
         mrrEur: 0,
@@ -259,6 +275,36 @@ export function buildRevenue(rows: SnapshotRow[], projects: ProjectRef[], subscr
   }
   watch.sort((a, b) => (a.kind === b.kind ? a.projectName.localeCompare(b.projectName, 'fr') : a.kind === 'crit' ? -1 : 1))
 
+  // Derniers abonnements : hors tentatives abandonnees (incomplete / incomplete_expired), les plus recents d'abord.
+  const STATUS: Record<string, { label: string; tone: RecentSubscription['tone'] }> = {
+    active: { label: 'Actif', tone: 'ok' },
+    trialing: { label: 'Essai', tone: 'muted' },
+    past_due: { label: 'Paiement en retard', tone: 'crit' },
+    unpaid: { label: 'Impayé', tone: 'crit' },
+    canceled: { label: 'Annulé', tone: 'muted' },
+    paused: { label: 'En pause', tone: 'muted' }
+  }
+  const recent: RecentSubscription[] = subscriptions
+    .filter((sub) => sub.createdAt && STATUS[sub.status] && projectById.has(sub.projectId))
+    .sort((a, b) => (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime())
+    .slice(0, 10)
+    .map((sub) => {
+      const project = projectById.get(sub.projectId) as ProjectRef
+      const status = STATUS[sub.status]
+      return {
+        client: sub.customerLabel ?? null,
+        projectSlug: project.slug,
+        projectName: project.name,
+        color: colorBySlug.get(project.slug) ?? projectColor(project.slug),
+        plan: sub.plan,
+        amountEur: round2(Number(sub.mrrEur)),
+        createdOn: dayKey(sub.createdAt as Date),
+        status: sub.status,
+        statusLabel: status.label,
+        tone: status.tone
+      }
+    })
+
   const movementTotals = emptyMovements()
   for (const project of list) {
     for (const key of Object.keys(movementTotals) as (keyof MovementTotals)[]) {
@@ -276,6 +322,7 @@ export function buildRevenue(rows: SnapshotRow[], projects: ProjectRef[], subscr
     months: monthsList,
     projects: list,
     watch: watch.slice(0, 20),
+    recent,
     movementDays: Math.min(30, historyDays),
     totals: {
       mrrEur,

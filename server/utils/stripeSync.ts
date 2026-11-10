@@ -9,6 +9,7 @@
 
 import { computeMrr, describeSubscription, type DescribedSubscription, type StripeProduct, type StripeSubscription } from './stripeMrr'
 import { addMovements, diffMovements } from './mrrMovements'
+import { customerIdOf, customerLabel, type StripeCustomerLite } from './customerLabel'
 
 const BASE = 'https://api.stripe.com/v1'
 // Une cle d'organisation EXIGE un en-tete de version d'API (sinon HTTP 400). Version fixee : le format des reponses ne change pas sous nos pieds.
@@ -19,8 +20,9 @@ type StripeList<T> = { data: T[]; has_more: boolean }
 
 export type AccountMap = Record<string, string>
 
-async function stripeGet<T>(key: string, account: string, path: string, params: Record<string, string>): Promise<StripeList<T>> {
-  const response = await fetch(`${BASE}${path}?${new URLSearchParams(params).toString()}`, {
+async function stripeRequest<T>(key: string, account: string, path: string, params: Record<string, string>): Promise<T> {
+  const query = new URLSearchParams(params).toString()
+  const response = await fetch(`${BASE}${path}${query ? `?${query}` : ''}`, {
     headers: { authorization: `Bearer ${key}`, 'stripe-context': account, 'stripe-version': STRIPE_VERSION },
     signal: AbortSignal.timeout(20_000)
   })
@@ -37,7 +39,40 @@ async function stripeGet<T>(key: string, account: string, path: string, params: 
     const safe = detail.replace(/(?:rk|sk|pk)_[A-Za-z0-9_*]+/g, '[cle]').slice(0, 200)
     throw new Error(`Stripe HTTP ${response.status}${safe ? ` (${safe})` : ''}`)
   }
-  return (await response.json()) as StripeList<T>
+  return (await response.json()) as T
+}
+
+const stripeGet = <T>(key: string, account: string, path: string, params: Record<string, string>) =>
+  stripeRequest<StripeList<T>>(key, account, path, params)
+
+// Libelles des clients (nom, ou e-mail masque) pour des abonnements nouveaux. Au plus `limit` appels par passage ; au premier refus
+// (droit "Customers : lecture" absent) on s'arrete pour ce compte, sans bruit : les libelles apparaitront quand le droit sera accorde.
+export async function fetchCustomerLabels(
+  key: string,
+  account: string,
+  customerIdsBySubscription: Map<string, string>,
+  limit = 60
+): Promise<{ labels: Map<string, string>; denied: boolean }> {
+  const labels = new Map<string, string>()
+  const byCustomer = new Map<string, string>() // client -> libelle (un client peut avoir plusieurs abonnements)
+  let calls = 0
+  for (const [subscriptionId, customerId] of customerIdsBySubscription) {
+    if (!byCustomer.has(customerId)) {
+      if (calls >= limit) continue
+      calls += 1
+      try {
+        const customer = await stripeRequest<StripeCustomerLite & { deleted?: boolean }>(key, account, `/customers/${encodeURIComponent(customerId)}`, {})
+        byCustomer.set(customerId, customer.deleted ? `Client ····${customerId.slice(-4)}` : customerLabel(customer, customerId))
+      } catch (error) {
+        if (error instanceof Error && /HTTP (401|403)/.test(error.message)) {
+          return { labels, denied: true }
+        }
+        continue // autre erreur ponctuelle : on reessaiera au prochain passage
+      }
+    }
+    labels.set(subscriptionId, byCustomer.get(customerId) as string)
+  }
+  return { labels, denied: false }
 }
 
 async function listSubscriptions(key: string, account: string): Promise<StripeSubscription[]> {
@@ -79,7 +114,7 @@ async function listProducts(key: string, account: string): Promise<Map<string, S
   return products
 }
 
-type StoredSubscription = { id: string; status: string; plan: string; mrrEur: unknown; cancelAtPeriodEnd: boolean; currentPeriodEnd: Date | null }
+type StoredSubscription = { id: string; status: string; plan: string; mrrEur: unknown; cancelAtPeriodEnd: boolean; currentPeriodEnd: Date | null; customerLabel?: string | null }
 
 // Un abonnement n'est reecrit que s'il est nouveau ou si un champ affiche a change (evite des centaines d'ecritures inutiles).
 export function changedSubscriptions(described: DescribedSubscription[], stored: StoredSubscription[]) {
@@ -92,6 +127,7 @@ export function changedSubscriptions(described: DescribedSubscription[], stored:
       row.plan !== item.plan ||
       Number(row.mrrEur) !== item.mrrEur ||
       row.cancelAtPeriodEnd !== item.cancelAtPeriodEnd ||
+      (row.customerLabel ?? null) !== (item.customerLabel ?? null) ||
       (row.currentPeriodEnd?.getTime() ?? null) !== (item.currentPeriodEnd?.getTime() ?? null)
     )
   })
@@ -159,11 +195,23 @@ export async function syncStripeMrr(): Promise<StripeSyncResult> {
       const project = await prisma.project.upsert({ where: { slug }, update: {}, create: { slug, name: slug } })
 
       // Etat precedent des abonnements -> mouvements du MRR depuis la derniere synchro, ajoutes a ceux deja comptes aujourd'hui.
-      const described = subscriptions.map((subscription) => describeSubscription(subscription, usdToEur, products))
       const stored = (await prisma.subscription.findMany({
         where: { projectId: project.id },
-        select: { id: true, status: true, plan: true, mrrEur: true, cancelAtPeriodEnd: true, currentPeriodEnd: true }
+        select: { id: true, status: true, plan: true, mrrEur: true, cancelAtPeriodEnd: true, currentPeriodEnd: true, customerLabel: true }
       })) as StoredSubscription[]
+
+      // Libelle client : repris de l'etat precedent s'il existe, sinon recherche (nouveaux abonnements seulement).
+      const labelOf = new Map(stored.map((row) => [row.id, row.customerLabel ?? null]))
+      const missing = new Map<string, string>()
+      for (const subscription of subscriptions) {
+        const customerId = customerIdOf(subscription)
+        if (customerId && !labelOf.get(subscription.id)) missing.set(subscription.id, customerId)
+      }
+      const fetched = missing.size > 0 ? await fetchCustomerLabels(key, accounts[slug], missing) : { labels: new Map<string, string>(), denied: false }
+      const described = subscriptions.map((subscription) => ({
+        ...describeSubscription(subscription, usdToEur, products),
+        customerLabel: fetched.labels.get(subscription.id) ?? labelOf.get(subscription.id) ?? null
+      }))
       const moves = diffMovements(
         stored.map((row) => ({ id: row.id, mrrEur: Number(row.mrrEur) })),
         described.map((item) => ({ id: item.id, mrrEur: item.mrrEur }))

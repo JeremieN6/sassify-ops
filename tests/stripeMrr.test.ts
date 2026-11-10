@@ -442,3 +442,85 @@ test('buildRevenue phase 2: without subscriptions or movements, everything is em
   assert.deepEqual(r.watch, [])
   assert.deepEqual(r.projects[0].plans, [])
 })
+
+import { customerIdOf, customerLabel, maskEmail } from '../server/utils/customerLabel.ts'
+import { fetchCustomerLabels } from '../server/utils/stripeSync.ts'
+
+test('customerLabel: name first, masked email otherwise, opaque id tail as a last resort; never the full email', () => {
+  assert.equal(customerLabel({ name: '  Marie   Dupont ', email: 'marie@exemple.fr' }, 'cus_ABCD1234'), 'Marie Dupont')
+  assert.equal(customerLabel({ name: '', email: 'Marie.Dupont@Gmail.com' }, 'cus_ABCD1234'), 'm***@gmail.com')
+  assert.equal(customerLabel({ name: null, email: null }, 'cus_ABCD1234'), 'Client ····1234')
+  assert.equal(customerLabel(null, 'cus_WXYZ'), 'Client ····WXYZ')
+  assert.ok(!customerLabel({ email: 'marie.dupont@gmail.com' }, 'cus_1').includes('marie'))
+  assert.equal(customerLabel({ name: 'x'.repeat(200) }, 'cus_1').length, 60)
+})
+
+test('maskEmail rejects malformed addresses; customerIdOf accepts a string or an expanded object', () => {
+  assert.equal(maskEmail('pas-un-mail'), null)
+  assert.equal(maskEmail('@domaine.fr'), null)
+  assert.equal(maskEmail('a@'), null)
+  assert.equal(customerIdOf({ customer: 'cus_1' }), 'cus_1')
+  assert.equal(customerIdOf({ customer: { id: 'cus_2' } }), 'cus_2')
+  assert.equal(customerIdOf({ customer: null }), null)
+  assert.equal(customerIdOf({}), null)
+})
+
+test('fetchCustomerLabels: one call per customer, shared across subscriptions, bounded, stops quietly on a permission refusal', async () => {
+  const g = globalThis as any
+  const realFetch = g.fetch
+  const urls: string[] = []
+  g.fetch = async (url: string) => {
+    urls.push(url)
+    if (url.includes('/customers/cus_denied')) return { ok: false, status: 403, json: async () => ({ error: { type: 'invalid_request_error', message: 'Permission denied' } }) }
+    const id = url.split('/customers/')[1]
+    return { ok: true, json: async () => ({ id, name: `Nom ${id}`, email: `${id}@exemple.fr` }) }
+  }
+  try {
+    const ids = new Map([['sub_1', 'cus_a'], ['sub_2', 'cus_a'], ['sub_3', 'cus_b']])
+    const { labels, denied } = await fetchCustomerLabels('rk_org_live_X', 'acct_1', ids)
+    assert.equal(denied, false)
+    assert.equal(urls.length, 2) // cus_a une seule fois pour deux abonnements
+    assert.deepEqual([...labels.entries()], [['sub_1', 'Nom cus_a'], ['sub_2', 'Nom cus_a'], ['sub_3', 'Nom cus_b']])
+
+    urls.length = 0
+    const bounded = await fetchCustomerLabels('rk_org_live_X', 'acct_1', new Map(Array.from({ length: 10 }, (_, i) => [`sub_${i}`, `cus_${i}`] as [string, string])), 3)
+    assert.equal(urls.length, 3)
+    assert.equal(bounded.labels.size, 3)
+
+    urls.length = 0
+    const refused = await fetchCustomerLabels('rk_org_live_X', 'acct_1', new Map([['sub_x', 'cus_denied'], ['sub_y', 'cus_b']]))
+    assert.equal(refused.denied, true)
+    assert.equal(refused.labels.size, 0)
+    assert.equal(urls.length, 1) // arret au premier refus
+  } finally {
+    g.fetch = realFetch
+  }
+})
+
+test('buildRevenue phase 3: recent subscriptions are newest first, skip abandoned checkouts and carry the client label', () => {
+  const rows = [{ projectId: 'p1', capturedOn: d('2026-11-10'), mrrEur: 30, subscribers: 2 }]
+  const mk = (over: any) => ({ projectId: 'p1', status: 'active', plan: 'Pro', mrrEur: 19, quantity: 1, cancelAtPeriodEnd: false, currentPeriodEnd: null, createdAt: d('2026-11-01'), customerLabel: null, ...over })
+  const r = buildRevenue(rows, REFS, [
+    mk({ createdAt: d('2026-11-03'), customerLabel: 'Marie Dupont' }),
+    mk({ createdAt: d('2026-11-08'), status: 'past_due', mrrEur: 11, customerLabel: 'm***@gmail.com' }),
+    mk({ createdAt: d('2026-11-09'), status: 'incomplete_expired', mrrEur: 0 }), // tentative abandonnee : exclue
+    mk({ createdAt: d('2026-10-01'), status: 'canceled', mrrEur: 0 }),
+    mk({ projectId: 'inconnu', createdAt: d('2026-11-09') }) // projet inconnu : exclu
+  ])
+  assert.deepEqual(r.recent.map((x) => [x.createdOn, x.statusLabel, x.tone, x.client]), [
+    ['2026-11-08', 'Paiement en retard', 'crit', 'm***@gmail.com'],
+    ['2026-11-03', 'Actif', 'ok', 'Marie Dupont'],
+    ['2026-10-01', 'Annulé', 'muted', null]
+  ])
+  assert.equal(r.recent[0].projectSlug, 'tifo')
+  assert.equal(r.recent[0].amountEur, 11)
+  assert.equal(buildRevenue(rows, REFS).recent.length, 0)
+})
+
+test('changedSubscriptions rewrites a row when only its client label changes', () => {
+  const mk = (over: any = {}) => ({ id: 'a', status: 'active', plan: 'Pro', mrrEur: 19, interval: 'month', quantity: 1, createdAt: new Date(0), canceledAt: null, cancelAtPeriodEnd: false, currentPeriodEnd: null, customerLabel: 'Marie', ...over })
+  const stored = [{ id: 'a', status: 'active', plan: 'Pro', mrrEur: '19.00', cancelAtPeriodEnd: false, currentPeriodEnd: null, customerLabel: 'Marie' }]
+  assert.deepEqual(changedSubscriptions([mk()], stored), [])
+  assert.equal(changedSubscriptions([mk({ customerLabel: 'Marie D.' })], stored).length, 1)
+  assert.equal(changedSubscriptions([mk({ customerLabel: null })], stored).length, 1)
+})

@@ -221,6 +221,7 @@ model Subscription {
   canceledAt        DateTime?
   cancelAtPeriodEnd Boolean   @default(false)
   currentPeriodEnd  DateTime?
+  customerLabel     String? // nom du client (ou e-mail masque) : seule donnee personnelle stockee, voir server/utils/customerLabel.ts
   syncedAt          DateTime  @default(now())
 
   @@index([projectId, status])
