@@ -26,6 +26,7 @@ model Project {
   fixedCosts   FixedCost[]
   deployments  Deployment[]
   mrrSnapshots MrrSnapshot[]
+  subscriptions Subscription[]
 }
 
 // Un appel API facture (ou estime) emis par un SaaS.
@@ -202,4 +203,25 @@ model MrrSnapshot {
   churnEur       Decimal  @default(0) @db.Decimal(12, 2)
 
   @@index([capturedOn])
+}
+
+// Un abonnement Stripe, tel que vu a la derniere synchronisation (une ligne par abonnement). AUCUNE donnee personnelle :
+// ni nom, ni e-mail, ni identifiant client Stripe ; seulement l'identifiant opaque de l'abonnement, le plan, le montant et le statut.
+// Sert aux repartitions par plan, au bloc "A surveiller" et au calcul des mouvements du MRR (comparaison a l'etat precedent).
+model Subscription {
+  id                String    @id // identifiant d'abonnement Stripe (sub_...)
+  projectId         String
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status            String
+  plan              String
+  mrrEur            Decimal   @default(0) @db.Decimal(12, 2) // contribution mensuelle comptee (0 si le statut ne compte pas)
+  interval          String?
+  quantity          Int       @default(1)
+  createdAt         DateTime
+  canceledAt        DateTime?
+  cancelAtPeriodEnd Boolean   @default(false)
+  currentPeriodEnd  DateTime?
+  syncedAt          DateTime  @default(now())
+
+  @@index([projectId, status])
 }

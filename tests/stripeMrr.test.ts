@@ -110,7 +110,8 @@ test('syncStripeMrr queries each account with Stripe-Context, paginates, isolate
   g.useRuntimeConfig = () => ({ stripeReadKey: KEY, stripeAccounts: '{"clippeak":"acct_A","stellara":"acct_B","tifo":"acct_C"}', usdToEur: '0.92' })
   g.prisma = {
     project: { upsert: async ({ where }: any) => ({ id: `id-${where.slug}`, slug: where.slug }) },
-    mrrSnapshot: { deleteMany: (a: any) => ({ op: 'delete', ...a }), create: (a: any) => ({ op: 'create', ...a }) },
+    mrrSnapshot: { findFirst: async () => null, deleteMany: (a: any) => ({ op: 'delete', ...a }), create: (a: any) => ({ op: 'create', ...a }) },
+    subscription: { findMany: async () => [], upsert: (a: any) => ({ op: 'upsert', ...a }) },
     $transaction: async (ops: any[]) => { writes.push(...ops) }
   }
   const monthly = (id: string, amount: number) => ({ id, status: 'active', items: { data: [{ quantity: 1, price: { unit_amount: amount, currency: 'eur', recurring: { interval: 'month', interval_count: 1 }, product: 'prod_x' } }] } })
@@ -118,6 +119,7 @@ test('syncStripeMrr queries each account with Stripe-Context, paginates, isolate
     const account = init.headers['stripe-context']
     calls.push({ account, url, auth: init.headers.authorization, version: init.headers['stripe-version'] })
     if (account === 'acct_B') return { ok: false, status: 403, json: async () => ({ error: { type: 'invalid_request_error', message: 'Invalid API Key provided: rk_org_live_********abcd' } }) }
+    if (url.includes('/products')) return { ok: true, json: async () => ({ has_more: false, data: [{ id: 'prod_x', name: 'Plan Pro' }] }) }
     if (account === 'acct_A' && !url.includes('starting_after')) return { ok: true, json: async () => ({ has_more: true, data: [monthly('sub_1', 1000)] }) }
     if (account === 'acct_A') return { ok: true, json: async () => ({ has_more: false, data: [monthly('sub_2', 2500)] }) }
     return { ok: true, json: async () => ({ has_more: false, data: [] }) }
@@ -134,7 +136,7 @@ test('syncStripeMrr queries each account with Stripe-Context, paginates, isolate
     assert.ok(!bySlug.stellara.error!.includes('rk_org'), bySlug.stellara.error)
     assert.equal(bySlug.tifo.ok, true)
     assert.equal(bySlug.tifo.mrrEur, 0)
-    assert.equal(calls.filter((c) => c.account === 'acct_A').length, 2)
+    assert.equal(calls.filter((c) => c.account === 'acct_A' && c.url.includes('/subscriptions')).length, 2)
     assert.ok(calls.every((c) => c.auth === `Bearer ${KEY}`))
     assert.ok(calls.every((c) => c.version === '2025-09-30.clover'))
     assert.ok(!JSON.stringify(result).includes(KEY))
@@ -345,4 +347,98 @@ test('server alerts: disabled rules raise nothing, and each host is judged on it
   assert.deepEqual(ruleIds(series(15, { cpuPct: 99, diskPct: 99 }), off), [])
   const two = [...series(15, { cpuPct: 99 }), ...series(15, { host: 'srv2' })]
   assert.deepEqual(ruleIds(two), ['server_cpu:srv1'])
+})
+
+import { describeSubscription } from '../server/utils/stripeMrr.ts'
+import { NO_MOVEMENTS, addMovements, diffMovements } from '../server/utils/mrrMovements.ts'
+import { changedSubscriptions } from '../server/utils/stripeSync.ts'
+
+test('diffMovements: new, churn, expansion and contraction; first sync is a baseline without movements', () => {
+  assert.deepEqual(diffMovements([], [{ id: 'a', mrrEur: 30 }]), NO_MOVEMENTS) // premiere synchro : base de depart
+  const before = [{ id: 'a', mrrEur: 10 }, { id: 'b', mrrEur: 20 }, { id: 'c', mrrEur: 30 }, { id: 'd', mrrEur: 40 }, { id: 'e', mrrEur: 0 }]
+  const now = [{ id: 'a', mrrEur: 25 }, { id: 'b', mrrEur: 5 }, { id: 'c', mrrEur: 0 }, { id: 'e', mrrEur: 12.5 }, { id: 'f', mrrEur: 9 }]
+  assert.deepEqual(diffMovements(before, now), {
+    newEur: 21.5, // e (essai devenu paye) 12,5 + f 9
+    expansionEur: 15, // a : 10 -> 25
+    contractionEur: 15, // b : 20 -> 5
+    churnEur: 70 // c annule (30) + d disparu (40)
+  })
+  assert.deepEqual(diffMovements(before, before), NO_MOVEMENTS) // rien n'a change
+})
+
+test('addMovements accumulates the runs of the day', () => {
+  assert.deepEqual(addMovements({ newEur: 9, expansionEur: 0, contractionEur: 1.5, churnEur: 0 }, { newEur: 1, expansionEur: 2, contractionEur: 0.25, churnEur: 3 }), { newEur: 10, expansionEur: 2, contractionEur: 1.75, churnEur: 3 })
+})
+
+test('describeSubscription: plan name, counted MRR, cancellation and period end, no personal data', () => {
+  const products = new Map([['prod_pro', { name: 'Pro' }]])
+  const base = {
+    id: 'sub_1', status: 'active', created: 1_760_000_000, cancel_at_period_end: true, customer: 'cus_SECRET', customer_email: 'nom@exemple.fr',
+    items: { data: [{ quantity: 2, current_period_end: 1_790_000_000, price: { nickname: null, unit_amount: 1900, currency: 'eur', recurring: { interval: 'month', interval_count: 1 }, product: 'prod_pro' } }] }
+  } as any
+  const d = describeSubscription(base, 0.92, products)
+  assert.equal(d.plan, 'Pro')
+  assert.equal(d.mrrEur, 38)
+  assert.equal(d.quantity, 2)
+  assert.equal(d.interval, 'month')
+  assert.equal(d.cancelAtPeriodEnd, true)
+  assert.equal(d.currentPeriodEnd?.getTime(), 1_790_000_000 * 1000)
+  assert.deepEqual(Object.keys(d).sort(), ['canceledAt', 'cancelAtPeriodEnd', 'createdAt', 'currentPeriodEnd', 'id', 'interval', 'mrrEur', 'plan', 'quantity', 'status'].sort())
+  assert.ok(!JSON.stringify(d).includes('cus_SECRET') && !JSON.stringify(d).includes('exemple.fr'))
+  // surnom du prix prioritaire, puis nom du produit, puis "Plan inconnu" ; un statut non compte vaut 0
+  base.items.data[0].price.nickname = 'Pro annuel'
+  assert.equal(describeSubscription(base, 0.92, products).plan, 'Pro annuel')
+  assert.equal(describeSubscription(base, 0.92, new Map()).plan, 'Pro annuel')
+  base.items.data[0].price.nickname = null
+  assert.equal(describeSubscription(base, 0.92, new Map()).plan, 'Plan inconnu')
+  assert.equal(describeSubscription({ ...base, status: 'trialing' }, 0.92, products).mrrEur, 0)
+})
+
+test('changedSubscriptions only returns new or modified subscriptions', () => {
+  const mk = (id: string, over: any = {}) => ({ id, status: 'active', plan: 'Pro', mrrEur: 19, interval: 'month', quantity: 1, createdAt: new Date(0), canceledAt: null, cancelAtPeriodEnd: false, currentPeriodEnd: null, ...over })
+  const stored = [{ id: 'a', status: 'active', plan: 'Pro', mrrEur: '19.00', cancelAtPeriodEnd: false, currentPeriodEnd: null }, { id: 'b', status: 'active', plan: 'Pro', mrrEur: '19.00', cancelAtPeriodEnd: false, currentPeriodEnd: null }]
+  const changed = changedSubscriptions([mk('a'), mk('b', { status: 'past_due' }), mk('c')], stored)
+  assert.deepEqual(changed.map((x) => x.id), ['b', 'c'])
+})
+
+test('buildRevenue phase 2: movements over 30 days, opening MRR identity, plans and watch list', () => {
+  const rows = [
+    { projectId: 'p1', capturedOn: d('2026-10-05'), mrrEur: 20, subscribers: 1, newEur: 0, expansionEur: 0, contractionEur: 0, churnEur: 0 }, // avant la fenetre : ignore
+    { projectId: 'p1', capturedOn: d('2026-11-01'), mrrEur: 49, subscribers: 3, newEur: 29, expansionEur: 0, contractionEur: 0, churnEur: 0 },
+    { projectId: 'p1', capturedOn: d('2026-11-10'), mrrEur: 52, subscribers: 3, newEur: 0, expansionEur: 13, contractionEur: 5, churnEur: 5 },
+    { projectId: 'p2', capturedOn: d('2026-11-10'), mrrEur: 10, subscribers: 1, newEur: 10, expansionEur: 0, contractionEur: 0, churnEur: 0 }
+  ]
+  const subs = [
+    { projectId: 'p1', status: 'active', plan: 'Pro', mrrEur: 19, quantity: 1, cancelAtPeriodEnd: false, currentPeriodEnd: null },
+    { projectId: 'p1', status: 'active', plan: 'Pro', mrrEur: 19, quantity: 1, cancelAtPeriodEnd: true, currentPeriodEnd: d('2026-11-30') },
+    { projectId: 'p1', status: 'past_due', plan: 'Equipe', mrrEur: 14, quantity: 1, cancelAtPeriodEnd: false, currentPeriodEnd: null },
+    { projectId: 'p1', status: 'canceled', plan: 'Pro', mrrEur: 0, quantity: 1, cancelAtPeriodEnd: false, currentPeriodEnd: null },
+    { projectId: 'p2', status: 'active', plan: 'Solo', mrrEur: 10, quantity: 1, cancelAtPeriodEnd: false, currentPeriodEnd: null }
+  ]
+  const r = buildRevenue(rows, REFS, subs)
+  const tifo = r.projects.find((p) => p.slug === 'tifo')!
+  assert.deepEqual(tifo.movements, { newEur: 29, expansionEur: 13, contractionEur: 5, churnEur: 5 })
+  assert.deepEqual(r.totals.movements, { newEur: 39, expansionEur: 13, contractionEur: 5, churnEur: 5 })
+  assert.equal(r.totals.mrrEur, 62)
+  // MRR d'ouverture = aujourd'hui - nouveaux - expansion + contraction + perte = 62 - 39 - 13 + 5 + 5
+  assert.equal(r.totals.openingMrrEur, 20)
+  assert.equal(r.movementDays, 30)
+  // plans : seuls les abonnements comptes (contribution > 0), regroupes par plan
+  assert.deepEqual(tifo.plans, [
+    { name: 'Pro', subscribers: 2, mrrEur: 38, priceEur: 19 },
+    { name: 'Equipe', subscribers: 1, mrrEur: 14, priceEur: 14 }
+  ])
+  // a surveiller : critique d'abord, puis avertissement ; un abonnement annule ne figure pas
+  assert.deepEqual(r.watch.map((w) => [w.kind, w.title, w.projectSlug]), [['crit', 'Paiement en retard', 'tifo'], ['warn', 'Annulation prévue', 'tifo']])
+  assert.match(r.watch[1].desc, /Pro · fin de période le 30 novembre · 19,00 € \/ mois/)
+  assert.match(r.watch[0].desc, /Equipe · 14,00 € \/ mois/)
+})
+
+test('buildRevenue phase 2: without subscriptions or movements, everything is empty and consistent', () => {
+  const r = buildRevenue([{ projectId: 'p1', capturedOn: d('2026-11-09'), mrrEur: 9, subscribers: 1 }], REFS)
+  assert.deepEqual(r.totals.movements, { newEur: 0, expansionEur: 0, contractionEur: 0, churnEur: 0 })
+  assert.equal(r.totals.openingMrrEur, 9) // aucun mouvement : le debut de periode vaut aujourd'hui
+  assert.equal(r.movementDays, 1) // historique d'un jour seulement
+  assert.deepEqual(r.watch, [])
+  assert.deepEqual(r.projects[0].plans, [])
 })

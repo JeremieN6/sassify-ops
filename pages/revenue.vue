@@ -50,6 +50,29 @@ const delta = (value: number | null) => (value === null ? '—' : f.signedPct(va
 const deltaColor = (value: number | null) => (value === null ? 'text-ink-muted' : value > 0 ? 'text-ok' : value < 0 ? 'text-crit' : 'text-ink-muted')
 const share = (mrr: number) => (totalMrr.value > 0 ? (mrr / totalMrr.value) * 100 : 0)
 const shortHistory = computed(() => (data.value?.historyDays ?? 0) < 30)
+
+// Mouvements du MRR (nouveaux / expansion / contraction / perte) de la sélection, sur la période couverte (30 jours max).
+const moveFigures = computed(() => {
+  if (!data.value) return null
+  const project = selected.value
+  const moves = project ? project.movements : data.value.totals.movements
+  const current = project ? project.mrrEur : data.value.totals.mrrEur
+  const opening = Math.round((current - moves.newEur - moves.expansionEur + moves.contractionEur + moves.churnEur) * 100) / 100
+  const lines = [
+    { label: 'Nouveaux abonnements', value: moves.newEur, sign: '+', color: 'text-ok', bar: 'bg-ok' },
+    { label: 'Expansion', value: moves.expansionEur, sign: '+', color: 'text-ok', bar: 'bg-ok' },
+    { label: 'Contraction', value: moves.contractionEur, sign: '−', color: 'text-warn', bar: 'bg-warn' },
+    { label: 'Pertes et annulations', value: moves.churnEur, sign: '−', color: 'text-crit', bar: 'bg-crit' }
+  ]
+  const peak = Math.max(0.0001, ...lines.map((line) => line.value))
+  return { opening, current, none: lines.every((line) => line.value === 0), lines: lines.map((line) => ({ ...line, width: `${(line.value / peak) * 100}%` })) }
+})
+const movePeriod = computed(() => ((data.value?.movementDays ?? 0) >= 30 ? '30 derniers jours' : `${data.value?.movementDays ?? 0} jour${(data.value?.movementDays ?? 0) > 1 ? 's' : ''} enregistré${(data.value?.movementDays ?? 0) > 1 ? 's' : ''}`))
+
+// Répartition par plan (projet choisi) et éléments à surveiller (sélection).
+const plans = computed(() => selected.value?.plans ?? [])
+const planTotal = computed(() => plans.value.reduce((sum, plan) => sum + plan.mrrEur, 0))
+const watch = computed(() => (data.value?.watch ?? []).filter((item) => !selected.value || item.projectSlug === selected.value.slug))
 </script>
 
 <template>
@@ -123,6 +146,7 @@ const shortHistory = computed(() => (data.value?.historyDays ?? 0) < 30)
           </UiKpi>
         </section>
 
+        <div class="grid items-stretch gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
         <UiPanel :title="selected ? `MRR · ${selName}` : 'MRR par projet'" subtitle="Revenu mensuel récurrent en fin de mois · mois en cours inclus" class="!gap-5">
           <template v-if="!selected" #actions>
             <ul class="m-0 flex max-w-[420px] list-none flex-wrap justify-end gap-x-4 gap-y-1.5 p-0 text-small text-ink-muted">
@@ -140,6 +164,28 @@ const shortHistory = computed(() => (data.value?.historyDays ?? 0) < 30)
             Historique en construction : {{ data.historyDays }} jour{{ data.historyDays > 1 ? 's' : '' }} enregistré{{ data.historyDays > 1 ? 's' : '' }}. La courbe se remplit jour après jour, depuis le démarrage de la synchronisation Stripe.
           </p>
         </UiPanel>
+
+        <UiPanel v-if="moveFigures" title="Mouvements du MRR" :subtitle="`${selName} · ${movePeriod}`" class="!gap-4">
+          <div class="flex items-baseline justify-between border-b border-line pb-3">
+            <span class="text-ink-muted">Début de période</span>
+            <span class="font-mono">{{ f.eur(moveFigures.opening) }}</span>
+          </div>
+          <div v-for="line in moveFigures.lines" :key="line.label" class="flex flex-col gap-2">
+            <div class="flex items-baseline justify-between">
+              <span>{{ line.label }}</span>
+              <span class="font-mono" :class="line.value > 0 ? line.color : 'text-ink-muted'">{{ line.value > 0 ? `${line.sign}${f.eur(line.value)}` : '—' }}</span>
+            </div>
+            <div class="h-1.5 overflow-hidden rounded-full bg-line" role="img" :aria-label="`${line.label} : ${f.eur(line.value)}`">
+              <div class="h-full" :class="line.bar" :style="{ width: line.width }" />
+            </div>
+          </div>
+          <p v-if="moveFigures.none" class="m-0 text-small text-ink-muted">Aucun mouvement enregistré sur la période. Les nouveaux abonnements, changements de plan et départs sont comptés à chaque synchronisation Stripe, à partir du 10 novembre.</p>
+          <div class="mt-auto flex items-baseline justify-between border-t border-line pt-3.5">
+            <span class="font-semibold">Aujourd'hui</span>
+            <span class="font-mono text-section font-medium">{{ f.eur(moveFigures.current) }}</span>
+          </div>
+        </UiPanel>
+        </div>
 
         <UiPanel v-if="!selected" title="Comparatif des projets" subtitle="Cliquez sur un projet pour le détailler" flush>
           <div class="relative overflow-x-auto">
@@ -197,6 +243,59 @@ const shortHistory = computed(() => (data.value?.historyDays ?? 0) < 30)
             <span class="font-medium">{{ withoutRevenue.length }} projet{{ withoutRevenue.length > 1 ? 's' : '' }} sans revenu</span>
             <span class="min-w-[240px] flex-1 text-small text-ink-muted">{{ withoutRevenue.map((project) => project.name).join(', ') }}</span>
           </div>
+        </UiPanel>
+
+        <UiPanel v-if="selected" title="Répartition par plan" :subtitle="selName" flush>
+          <p v-if="plans.length === 0" class="m-0 px-2 pb-5 pt-1 text-ink-muted">Aucun plan facturé pour le moment.</p>
+          <div v-else class="relative overflow-x-auto">
+            <table class="w-full min-w-[560px] text-body">
+              <thead>
+                <tr class="eyebrow border-b border-line text-left">
+                  <th class="px-2 py-2 font-normal">Plan</th>
+                  <th class="px-2 py-2 text-right font-normal">Prix moyen</th>
+                  <th class="px-2 py-2 text-right font-normal">Abonnés</th>
+                  <th class="px-2 py-2 text-right font-normal">MRR</th>
+                  <th class="px-2 py-2 font-normal">Part</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="plan in plans" :key="plan.name" class="row-hover border-b border-line">
+                  <td class="px-2 py-3.5 font-medium">{{ plan.name }}</td>
+                  <td class="px-2 py-3.5 text-right font-mono text-small">{{ f.eur(plan.priceEur) }}</td>
+                  <td class="px-2 py-3.5 text-right font-mono text-small">{{ f.num(plan.subscribers) }}</td>
+                  <td class="px-2 py-3.5 text-right font-mono text-small font-medium">{{ f.eur(plan.mrrEur) }}</td>
+                  <td class="w-[26%] px-2 py-3.5">
+                    <div class="flex items-center gap-2.5">
+                      <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-line" role="img" :aria-label="`${f.pct(planTotal > 0 ? (plan.mrrEur / planTotal) * 100 : 0, 1)} du MRR de ${selName}`">
+                        <div class="h-full" :style="{ width: `${planTotal > 0 ? (plan.mrrEur / planTotal) * 100 : 0}%`, background: accent }" />
+                      </div>
+                      <span class="w-14 text-right font-mono text-small text-ink-muted">{{ f.pct(planTotal > 0 ? (plan.mrrEur / planTotal) * 100 : 0, 1) }}</span>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </UiPanel>
+
+        <UiPanel title="À surveiller" :subtitle="`${selName} · paiements en retard et annulations prévues`">
+          <p v-if="watch.length === 0" class="m-0 border-t border-line pt-3.5 text-ink-muted">Rien à signaler pour {{ selName }}.</p>
+          <ul v-else class="m-0 flex list-none flex-col p-0">
+            <li v-for="(item, index) in watch" :key="`${item.projectSlug}-${index}`" class="flex gap-3 border-t border-line py-3.5">
+              <span
+                class="grid h-8 w-8 flex-none place-items-center rounded-full"
+                :class="item.kind === 'crit' ? 'bg-crit/14 text-crit' : 'bg-warn/14 text-warn'"
+                role="img"
+                :aria-label="item.kind === 'crit' ? 'Critique' : 'Avertissement'"
+              >
+                <UiIcon :name="item.kind === 'crit' ? 'circleAlert' : 'warn'" :size="16" />
+              </span>
+              <div class="flex min-w-0 flex-col gap-0.5">
+                <span class="font-medium">{{ item.title }}</span>
+                <span class="text-small text-ink-muted"><span class="font-medium" :style="{ color: item.color }">{{ item.projectName }}</span> · {{ item.desc }}</span>
+              </div>
+            </li>
+          </ul>
         </UiPanel>
       </template>
     </template>
