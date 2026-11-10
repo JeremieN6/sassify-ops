@@ -187,3 +187,86 @@ test('lastKnownProcesses returns the newest process list and ignores rows withou
   assert.deepEqual(lastKnownProcesses([]), [])
   assert.equal(serverMetricSchema.safeParse({ host: 'srv1', cpuPct: 1 }).success, true) // sans processus : valide
 })
+
+import { buildRevenue, lastTwelveMonths } from '../server/utils/revenue.ts'
+
+const d = (iso: string) => new Date(`${iso}T00:00:00Z`)
+const REFS = [
+  { id: 'p1', slug: 'tifo', name: 'Tifo' },
+  { id: 'p2', slug: 'skinalyze', name: 'Skinalyze' },
+  { id: 'p3', slug: 'clippeak', name: 'Clippeak' }
+]
+
+test('buildRevenue: no snapshot means not configured', () => {
+  const r = buildRevenue([], REFS)
+  assert.equal(r.configured, false)
+  assert.equal(r.projects.length, 0)
+})
+
+test('buildRevenue: one day of history gives current figures, unknown variation and no sparkline', () => {
+  const r = buildRevenue([
+    { projectId: 'p1', capturedOn: d('2026-11-09'), mrrEur: 9, subscribers: 1 },
+    { projectId: 'p2', capturedOn: d('2026-11-09'), mrrEur: 0, subscribers: 0 }
+  ], REFS)
+  assert.equal(r.configured, true)
+  assert.equal(r.updatedOn, '2026-11-09')
+  assert.equal(r.historyDays, 1)
+  assert.equal(r.totals.mrrEur, 9)
+  assert.equal(r.totals.arrEur, 108)
+  assert.equal(r.totals.subscribers, 1)
+  assert.equal(r.totals.arpuEur, 9)
+  assert.equal(r.totals.prevMrrEur, null)
+  assert.equal(r.totals.deltaPct, null)
+  assert.equal(r.projects[0].slug, 'tifo') // trie par MRR decroissant
+  assert.deepEqual(r.projects[0].spark, [])
+  assert.equal(r.projects[1].arpuEur, null) // pas d'abonne : pas de panier moyen
+  assert.equal(r.months.length, 12)
+  assert.equal(r.months[11], '2026-11')
+  assert.equal(r.projects[0].monthly[11], 9)
+  assert.equal(r.projects[0].monthly[10], 0) // avant le premier instantane
+})
+
+test('buildRevenue: variation over 30 days, history carried forward, new project counts as growth', () => {
+  const r = buildRevenue([
+    { projectId: 'p1', capturedOn: d('2026-09-30'), mrrEur: 20, subscribers: 2 },
+    { projectId: 'p1', capturedOn: d('2026-10-15'), mrrEur: 30, subscribers: 3 },
+    { projectId: 'p1', capturedOn: d('2026-11-10'), mrrEur: 40, subscribers: 4 },
+    { projectId: 'p2', capturedOn: d('2026-11-10'), mrrEur: 10, subscribers: 1 }
+  ], REFS)
+  const tifo = r.projects.find((p) => p.slug === 'tifo')!
+  assert.equal(r.historyDays, 42)
+  assert.equal(tifo.prevMrrEur, 20) // dernier instantane <= 11 oct : celui du 30 sept
+  assert.equal(tifo.deltaEur, 20)
+  assert.equal(tifo.deltaPct, 100)
+  assert.equal(tifo.spark.length, 30)
+  assert.equal(tifo.spark[29], 40)
+  assert.equal(tifo.spark[0], 20) // report vers l'avant
+  assert.equal(r.totals.mrrEur, 50)
+  assert.equal(r.totals.prevMrrEur, 20) // skinalyze absent il y a 30 jours : compte pour 0
+  assert.equal(r.totals.deltaPct, 150)
+  // mensuel : sept 20, oct 30, nov 40
+  assert.deepEqual(tifo.monthly.slice(9), [20, 30, 40])
+})
+
+test('buildRevenue: a month without snapshot repeats the previous value after the first snapshot', () => {
+  const r = buildRevenue([
+    { projectId: 'p1', capturedOn: d('2026-08-31'), mrrEur: 10, subscribers: 1 },
+    { projectId: 'p1', capturedOn: d('2026-11-10'), mrrEur: 25, subscribers: 2 }
+  ], REFS)
+  const monthly = r.projects[0].monthly
+  assert.deepEqual(monthly.slice(8), [10, 10, 10, 25]) // aout, sept, oct (reportes), nov
+  assert.equal(monthly[7], 0) // juillet : avant le premier instantane
+})
+
+test('buildRevenue: rows without a known project are grouped as unattributed', () => {
+  const r = buildRevenue([{ projectId: null, capturedOn: d('2026-11-09'), mrrEur: 5, subscribers: 1 }], REFS)
+  assert.equal(r.projects[0].slug, 'non-attribue')
+  assert.equal(r.projects[0].name, 'Non attribué')
+})
+
+test('lastTwelveMonths ends on the reference month', () => {
+  const months = lastTwelveMonths(d('2026-01-15'))
+  assert.equal(months.length, 12)
+  assert.equal(months[0], '2025-02')
+  assert.equal(months[11], '2026-01')
+})
