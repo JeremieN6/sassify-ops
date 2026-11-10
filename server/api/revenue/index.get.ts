@@ -10,7 +10,7 @@ export default defineEventHandler(async () => {
     prisma.project.findMany({ select: { id: true, slug: true, name: true } }),
     // La page doit rester utilisable meme si la table des abonnements n'existe pas encore (avant la migration) ou est illisible.
     prisma.subscription
-      .findMany({ select: { projectId: true, status: true, plan: true, mrrEur: true, quantity: true, cancelAtPeriodEnd: true, currentPeriodEnd: true }, take: 5000 })
+      .findMany({ select: { projectId: true, status: true, plan: true, mrrEur: true, quantity: true, cancelAtPeriodEnd: true, currentPeriodEnd: true, createdAt: true, customerLabel: true }, take: 5000 })
       .catch(() => [])
   ])
 

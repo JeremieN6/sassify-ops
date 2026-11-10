@@ -73,6 +73,11 @@ const movePeriod = computed(() => ((data.value?.movementDays ?? 0) >= 30 ? '30 d
 const plans = computed(() => selected.value?.plans ?? [])
 const planTotal = computed(() => plans.value.reduce((sum, plan) => sum + plan.mrrEur, 0))
 const watch = computed(() => (data.value?.watch ?? []).filter((item) => !selected.value || item.projectSlug === selected.value.slug))
+
+// Derniers abonnements (nom du client ou e-mail masqué : seule donnée personnelle stockée, voir server/utils/customerLabel.ts).
+const recent = computed(() => (data.value?.recent ?? []).filter((item) => !selected.value || item.projectSlug === selected.value.slug))
+const noClientNames = computed(() => recent.value.length > 0 && recent.value.every((item) => item.client === null))
+const TONE = { ok: 'bg-ok/14 text-ok', warn: 'bg-warn/14 text-warn', crit: 'bg-crit/14 text-crit', muted: 'bg-line text-ink-muted' } as const
 </script>
 
 <template>
@@ -278,6 +283,7 @@ const watch = computed(() => (data.value?.watch ?? []).filter((item) => !selecte
           </div>
         </UiPanel>
 
+        <div class="grid items-start gap-6 xl:grid-cols-[minmax(320px,1fr)_minmax(0,2fr)]">
         <UiPanel title="À surveiller" :subtitle="`${selName} · paiements en retard et annulations prévues`">
           <p v-if="watch.length === 0" class="m-0 border-t border-line pt-3.5 text-ink-muted">Rien à signaler pour {{ selName }}.</p>
           <ul v-else class="m-0 flex list-none flex-col p-0">
@@ -297,6 +303,44 @@ const watch = computed(() => (data.value?.watch ?? []).filter((item) => !selecte
             </li>
           </ul>
         </UiPanel>
+
+        <UiPanel title="Derniers abonnements" :subtitle="`${selName} · les plus récents d'abord`" flush>
+          <p v-if="recent.length === 0" class="m-0 px-2 pb-5 pt-1 text-ink-muted">Aucun abonnement pour {{ selName }}.</p>
+          <div v-else class="relative overflow-x-auto">
+            <table class="w-full min-w-[700px] text-body">
+              <thead>
+                <tr class="eyebrow border-b border-line text-left">
+                  <th class="px-2 py-2 font-normal">Client</th>
+                  <th class="px-2 py-2 font-normal">Projet</th>
+                  <th class="px-2 py-2 font-normal">Plan</th>
+                  <th class="px-2 py-2 text-right font-normal">Montant</th>
+                  <th class="px-2 py-2 font-normal">Date</th>
+                  <th class="px-2 py-2 font-normal">Statut</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(item, index) in recent" :key="`${item.projectSlug}-${item.createdOn}-${index}`" class="row-hover border-b border-line">
+                  <td class="px-2 py-3.5 font-medium" :class="item.client === null ? 'text-ink-muted' : ''">{{ item.client ?? 'Client non identifié' }}</td>
+                  <td class="px-2 py-3.5">
+                    <span class="inline-flex items-center gap-2"><span class="h-2 w-2 flex-none rounded-full" :style="{ background: item.color }" aria-hidden="true" />{{ item.projectName }}</span>
+                  </td>
+                  <td class="px-2 py-3.5 text-ink-muted">{{ item.plan }}</td>
+                  <td class="px-2 py-3.5 text-right font-mono text-small">{{ item.amountEur > 0 ? f.eur(item.amountEur) : '—' }} <span v-if="item.amountEur > 0" class="text-ink-muted">/ mois</span></td>
+                  <td class="px-2 py-3.5 text-small text-ink-muted">{{ f.dayMonth(item.createdOn) }}</td>
+                  <td class="px-2 py-3.5">
+                    <span class="inline-flex h-[26px] items-center gap-2 rounded-full px-2.5 text-small font-medium" :class="TONE[item.tone]">
+                      <span class="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />{{ item.statusLabel }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-if="noClientNames" class="m-0 border-t border-line px-2 pb-3 pt-3 text-small text-ink-muted">
+            Les noms des clients apparaîtront dès que la clé Stripe de pilotage aura le droit « Customers : lecture » (Stripe → Développeurs → Clés API → modifier la clé d'organisation).
+          </p>
+        </UiPanel>
+        </div>
       </template>
     </template>
   </div>
