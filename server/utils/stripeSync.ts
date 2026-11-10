@@ -3,9 +3,12 @@
 // Une CLE D'ORGANISATION restreinte (Abonnements : lecture) donne acces a tous les comptes de l'organisation ; chaque requete
 // precise le compte vise par l'en-tete `Stripe-Context: acct_...`. Cle : NUXT_STRIPE_READ_KEY.
 // Comptes : NUXT_STRIPE_ACCOUNTS (JSON {"slug-du-projet":"acct_..."}), valeur par defaut dans nuxt.config.ts.
-// Ecrit un instantane par projet et par jour (rejouable : remplace celui du jour). Un compte en echec n'empeche pas les autres.
+// Ecrit un instantane par projet et par jour (rejouable : remplace celui du jour) ET l'etat de chaque abonnement (table Subscription,
+// SANS donnee personnelle) ; les mouvements du MRR (nouveau / expansion / contraction / perte) sont calcules par comparaison avec
+// l'etat precedent et ajoutes a l'instantane du jour. Un compte en echec n'empeche pas les autres.
 
-import { computeMrr, type StripeSubscription } from './stripeMrr'
+import { computeMrr, describeSubscription, type DescribedSubscription, type StripeProduct, type StripeSubscription } from './stripeMrr'
+import { addMovements, diffMovements } from './mrrMovements'
 
 const BASE = 'https://api.stripe.com/v1'
 // Une cle d'organisation EXIGE un en-tete de version d'API (sinon HTTP 400). Version fixee : le format des reponses ne change pas sous nos pieds.
@@ -53,6 +56,45 @@ async function listSubscriptions(key: string, account: string): Promise<StripeSu
     startingAfter = result.data[result.data.length - 1].id
   }
   throw new Error(`plus de ${MAX_PAGES} pages d'abonnements, synchronisation interrompue`)
+}
+
+// Noms des produits (= plans). Droit "Produits : lecture" requis ; sans lui on continue (le plan retombe sur le surnom du prix).
+async function listProducts(key: string, account: string): Promise<Map<string, StripeProduct>> {
+  const products = new Map<string, StripeProduct>()
+  try {
+    let startingAfter = ''
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const result = await stripeGet<StripeProduct & { id: string }>(key, account, '/products', { limit: '100', ...(startingAfter ? { starting_after: startingAfter } : {}) })
+      for (const product of result.data) {
+        products.set(product.id, { name: product.name, metadata: product.metadata })
+      }
+      if (!result.has_more || result.data.length === 0) {
+        break
+      }
+      startingAfter = result.data[result.data.length - 1].id
+    }
+  } catch {
+    // produits illisibles : plans nommes par le surnom du prix, ou "Plan inconnu"
+  }
+  return products
+}
+
+type StoredSubscription = { id: string; status: string; plan: string; mrrEur: unknown; cancelAtPeriodEnd: boolean; currentPeriodEnd: Date | null }
+
+// Un abonnement n'est reecrit que s'il est nouveau ou si un champ affiche a change (evite des centaines d'ecritures inutiles).
+export function changedSubscriptions(described: DescribedSubscription[], stored: StoredSubscription[]) {
+  const byId = new Map(stored.map((row) => [row.id, row]))
+  return described.filter((item) => {
+    const row = byId.get(item.id)
+    return (
+      !row ||
+      row.status !== item.status ||
+      row.plan !== item.plan ||
+      Number(row.mrrEur) !== item.mrrEur ||
+      row.cancelAtPeriodEnd !== item.cancelAtPeriodEnd ||
+      (row.currentPeriodEnd?.getTime() ?? null) !== (item.currentPeriodEnd?.getTime() ?? null)
+    )
+  })
 }
 
 export function readAccountMap(raw: string): AccountMap {
@@ -110,14 +152,39 @@ export async function syncStripeMrr(): Promise<StripeSyncResult> {
   for (const slug of slugs) {
     try {
       const subscriptions = await listSubscriptions(key, accounts[slug])
-      const computed = computeMrr(subscriptions, {}, usdToEur)
+      const products = await listProducts(key, accounts[slug])
+      const computed = computeMrr(subscriptions, {}, usdToEur, products)
       const bucket = computed.byProject.get(null) ?? { mrrEur: 0, subscribers: 0 }
 
       const project = await prisma.project.upsert({ where: { slug }, update: {}, create: { slug, name: slug } })
+
+      // Etat precedent des abonnements -> mouvements du MRR depuis la derniere synchro, ajoutes a ceux deja comptes aujourd'hui.
+      const described = subscriptions.map((subscription) => describeSubscription(subscription, usdToEur, products))
+      const stored = (await prisma.subscription.findMany({
+        where: { projectId: project.id },
+        select: { id: true, status: true, plan: true, mrrEur: true, cancelAtPeriodEnd: true, currentPeriodEnd: true }
+      })) as StoredSubscription[]
+      const moves = diffMovements(
+        stored.map((row) => ({ id: row.id, mrrEur: Number(row.mrrEur) })),
+        described.map((item) => ({ id: item.id, mrrEur: item.mrrEur }))
+      )
+      const today = await prisma.mrrSnapshot.findFirst({ where: { capturedOn, projectId: project.id } })
+      const movements = today
+        ? addMovements({ newEur: Number(today.newEur), expansionEur: Number(today.expansionEur), contractionEur: Number(today.contractionEur), churnEur: Number(today.churnEur) }, moves)
+        : moves
+
       // Rejouable : seul l'instantane du jour DE CE PROJET est remplace (un autre compte en echec ne perd rien).
       await prisma.$transaction([
         prisma.mrrSnapshot.deleteMany({ where: { capturedOn, projectId: project.id } }),
-        prisma.mrrSnapshot.create({ data: { capturedOn, projectId: project.id, mrrEur: bucket.mrrEur, subscribers: bucket.subscribers } })
+        prisma.mrrSnapshot.create({ data: { capturedOn, projectId: project.id, mrrEur: bucket.mrrEur, subscribers: bucket.subscribers, ...movements } }),
+        ...changedSubscriptions(described, stored).map((item) => {
+          const { id, ...fields } = item
+          return prisma.subscription.upsert({
+            where: { id },
+            create: { id, projectId: project.id, ...fields },
+            update: { ...fields, syncedAt: new Date() }
+          })
+        })
       ])
 
       results.push({

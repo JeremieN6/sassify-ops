@@ -7,6 +7,7 @@
 //   - remise : seul `percent_off` est applique ; une remise a montant fixe est signalee (`discountsNotApplied`), pas appliquee.
 
 export type StripePrice = {
+  nickname?: string | null
   unit_amount?: number | null
   unit_amount_decimal?: string | null
   currency?: string
@@ -23,11 +24,15 @@ export type StripeProduct = { name?: string; metadata?: Record<string, string> |
 export type StripeSubscription = {
   id: string
   status: string
+  created?: number // secondes Unix
+  canceled_at?: number | null
+  cancel_at_period_end?: boolean
+  current_period_end?: number | null // anciennes versions de l'API ; sinon sur chaque element (items.data[].current_period_end)
   metadata?: Record<string, string> | null
   // Selon la version de l'API Stripe : `discount` (ancien) ou `discounts` (liste ; objets si etendus, identifiants sinon).
   discount?: StripeDiscount | null
   discounts?: Array<StripeDiscount | string> | null
-  items?: { data?: Array<{ quantity?: number | null; price?: StripePrice | null }> }
+  items?: { data?: Array<{ quantity?: number | null; current_period_end?: number | null; price?: StripePrice | null }> }
 }
 
 export type MrrResult = {
@@ -192,4 +197,43 @@ export function computeMrr(
   }
 
   return { byProject, unmatchedProducts: [...unmatched].sort(), skipped, discountsNotApplied }
+}
+
+// ---------- Description d'un abonnement pour la table Subscription (aucune donnee personnelle) ----------
+
+export type DescribedSubscription = {
+  id: string
+  status: string
+  plan: string
+  mrrEur: number // contribution mensuelle COMPTEE (0 si le statut ne compte pas ou si le prix n'est pas chiffrable)
+  interval: string | null
+  quantity: number
+  createdAt: Date
+  canceledAt: Date | null
+  cancelAtPeriodEnd: boolean
+  currentPeriodEnd: Date | null
+}
+
+const toDate = (seconds: number | null | undefined) => (typeof seconds === 'number' && seconds > 0 ? new Date(seconds * 1000) : null)
+
+// Le montant vient de computeMrr (une seule source de verite : memes regles de statut, de devise et de remise).
+export function describeSubscription(subscription: StripeSubscription, usdToEur: number, products: Map<string, StripeProduct> = new Map()): DescribedSubscription {
+  const first = subscription.items?.data?.[0]
+  const price = first?.price ?? null
+  const product = price ? (typeof price.product === 'string' ? products.get(price.product) : price.product && typeof price.product === 'object' ? price.product : undefined) : undefined
+  const plan = (price?.nickname || product?.name || '').trim() || 'Plan inconnu'
+  const contribution = computeMrr([subscription], {}, usdToEur, products).byProject.get(null)
+  const periodEnds = (subscription.items?.data ?? []).map((item) => item.current_period_end).filter((value): value is number => typeof value === 'number')
+  return {
+    id: subscription.id,
+    status: subscription.status,
+    plan: plan.slice(0, 80),
+    mrrEur: contribution?.mrrEur ?? 0,
+    interval: price?.recurring?.interval ?? null,
+    quantity: first?.quantity ?? 1,
+    createdAt: toDate(subscription.created) ?? new Date(0),
+    canceledAt: toDate(subscription.canceled_at),
+    cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+    currentPeriodEnd: toDate(subscription.current_period_end ?? (periodEnds.length ? Math.min(...periodEnds) : null))
+  }
 }
