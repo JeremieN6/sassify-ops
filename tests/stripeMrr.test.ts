@@ -270,3 +270,79 @@ test('lastTwelveMonths ends on the reference month', () => {
   assert.equal(months[0], '2025-02')
   assert.equal(months[11], '2026-01')
 })
+
+import { DEFAULT_SERVER_RULES, desiredServerAlerts, hostOfFingerprint, type MetricSample } from '../server/utils/serverAlerts.ts'
+
+const T0 = Date.parse('2026-11-10T12:00:00Z')
+const MIN_MS = 60_000
+// Une mesure par minute sur `minutes` minutes se terminant a T0 ; `cpu(i)` donne la valeur de la i-eme mesure (0 = la plus ancienne).
+const series = (minutes: number, over: Partial<MetricSample> | ((i: number) => Partial<MetricSample>) = {}): MetricSample[] =>
+  Array.from({ length: minutes }, (_, i) => ({
+    host: 'srv1', at: T0 - (minutes - 1 - i) * MIN_MS, cpuPct: 10, memPct: 30, diskPct: 46, processes: null,
+    ...(typeof over === 'function' ? over(i) : over)
+  }))
+const ruleIds = (samples: MetricSample[], rules = DEFAULT_SERVER_RULES, now = T0 + 20_000) => desiredServerAlerts(samples, rules, now).desired.map((a) => a.fingerprint).sort()
+
+test('server alerts: a healthy server raises nothing', () => {
+  assert.deepEqual(ruleIds(series(15)), [])
+})
+
+test('server alerts: an isolated CPU spike is ignored, a sustained load is reported', () => {
+  assert.deepEqual(ruleIds(series(15, (i) => (i >= 11 && i <= 12 ? { cpuPct: 100 } : {}))), []) // 2 mesures sur 10 : un pic (deploiement)
+  assert.deepEqual(ruleIds(series(15, (i) => (i >= 4 ? { cpuPct: 96 } : {}))), ['server_cpu:srv1'])
+  assert.deepEqual(ruleIds(series(15, { cpuPct: 89 })), []) // juste sous le seuil
+})
+
+test('server alerts: not enough points in the window means no conclusion', () => {
+  assert.deepEqual(ruleIds(series(2, { cpuPct: 99, memPct: 99 })), [])
+})
+
+test('server alerts: sustained memory, and null readings are skipped', () => {
+  assert.deepEqual(ruleIds(series(15, { memPct: 93 })), ['server_memory:srv1'])
+  assert.deepEqual(ruleIds(series(15, { cpuPct: null, memPct: null })), [])
+})
+
+test('server alerts: disk uses the latest reading, critical from 95 %', () => {
+  const warn = desiredServerAlerts(series(3, { diskPct: 88 }), DEFAULT_SERVER_RULES, T0).desired
+  assert.equal(warn[0].fingerprint, 'server_disk:srv1')
+  assert.equal(warn[0].severity, 'WARNING')
+  assert.equal(desiredServerAlerts(series(3, { diskPct: 96 }), DEFAULT_SERVER_RULES, T0).desired[0].severity, 'CRITICAL')
+  assert.deepEqual(ruleIds(series(3, { diskPct: 84.9 })), [])
+})
+
+test('server alerts: a stopped PM2 process needs the two latest PM2 readings to agree', () => {
+  const procs = (status: string) => [{ name: 'web', restarts: 1, status: 'online' }, { name: 'worker', restarts: 2, status }]
+  const base = series(15)
+  const withReads = (first: string, second: string) =>
+    base.map((s, i) => (i === 9 ? { ...s, processes: procs(first) } : i === 14 ? { ...s, processes: procs(second) } : s))
+  assert.deepEqual(ruleIds(withReads('online', 'errored')), []) // une seule lecture en erreur : trop tot
+  assert.deepEqual(ruleIds(withReads('stopped', 'errored')), ['pm2_unhealthy:srv1:worker:down'])
+  const alert = desiredServerAlerts(withReads('errored', 'errored'), DEFAULT_SERVER_RULES, T0).desired[0]
+  assert.equal(alert.severity, 'CRITICAL')
+  assert.match(alert.title, /en erreur/)
+})
+
+test('server alerts: a restart loop is detected on the restart counter over the window', () => {
+  const base = series(30)
+  const reads = (a: number, b: number) =>
+    base.map((s, i) => (i === 2 ? { ...s, processes: [{ name: 'web', restarts: a, status: 'online' }] } : i === 29 ? { ...s, processes: [{ name: 'web', restarts: b, status: 'online' }] } : s))
+  assert.deepEqual(ruleIds(reads(10, 14)), []) // 4 < 5
+  assert.deepEqual(ruleIds(reads(10, 15)), ['pm2_unhealthy:srv1:web:loop'])
+  assert.deepEqual(ruleIds(reads(40, 3)), []) // compteur remis a zero : pas de boucle
+})
+
+test('server alerts: a silent agent raises one alert and freezes the rest for that host', () => {
+  const samples = series(15, { cpuPct: 99 }).map((s) => ({ ...s, at: s.at - 30 * MIN_MS })) // derniere mesure il y a 30 min
+  const { desired, silentHosts } = desiredServerAlerts(samples, DEFAULT_SERVER_RULES, T0)
+  assert.deepEqual(desired.map((a) => a.fingerprint), ['agent_silent:srv1'])
+  assert.equal(silentHosts.has('srv1'), true)
+  assert.equal(hostOfFingerprint('pm2_unhealthy:srv1:web:down'), 'srv1')
+  assert.equal(hostOfFingerprint('agent_silent'), null)
+})
+
+test('server alerts: disabled rules raise nothing, and each host is judged on its own', () => {
+  const off = { ...DEFAULT_SERVER_RULES, server_cpu: { ...DEFAULT_SERVER_RULES.server_cpu, enabled: false }, server_disk: { ...DEFAULT_SERVER_RULES.server_disk, enabled: false } }
+  assert.deepEqual(ruleIds(series(15, { cpuPct: 99, diskPct: 99 }), off), [])
+  const two = [...series(15, { cpuPct: 99 }), ...series(15, { host: 'srv2' })]
+  assert.deepEqual(ruleIds(two), ['server_cpu:srv1'])
+})

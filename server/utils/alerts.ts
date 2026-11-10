@@ -7,12 +7,17 @@ export const RULE_DEFS = [
   { key: 'latency_high', label: 'Latence p95 élevée sur une fenêtre glissante', severity: 'CRITICAL', params: { thresholdMs: 800, windowMin: 10 } },
   { key: 'cert_expiry', label: 'Certificat SSL proche de l’expiration', severity: 'WARNING', params: { days: 14 } },
   { key: 'deploy_failed', label: 'Déploiement en production échoué', severity: 'WARNING', params: null },
-  { key: 'budget_threshold', label: 'Budget mensuel proche du plafond', severity: 'WARNING', params: { pct: 85 } }
+  { key: 'budget_threshold', label: 'Budget mensuel proche du plafond', severity: 'WARNING', params: { pct: 85 } },
+  { key: 'server_cpu', label: 'CPU du serveur saturé de façon soutenue', severity: 'WARNING', params: { pct: 90, windowMin: 10 } },
+  { key: 'server_memory', label: 'Mémoire du serveur presque saturée (soutenue)', severity: 'WARNING', params: { pct: 90, windowMin: 10 } },
+  { key: 'server_disk', label: 'Disque du serveur presque plein', severity: 'WARNING', params: { pct: 85 } },
+  { key: 'pm2_unhealthy', label: 'Processus PM2 arrêté ou en boucle de redémarrage', severity: 'CRITICAL', params: { restarts: 5, windowMin: 30 } },
+  { key: 'agent_silent', label: 'Agent serveur silencieux (plus de mesures)', severity: 'WARNING', params: { minutes: 10 } }
 ] as const
 
 type Cache = {
   openFp: Set<string> | null
-  rules: { at: number; set: RuleSet; enabled: Record<string, boolean>; budgetPct: number } | null
+  rules: { at: number; set: RuleSet; enabled: Record<string, boolean>; budgetPct: number; params: Record<string, Record<string, number>> } | null
   lastBudgetCheck: number
 }
 const g = globalThis as unknown as { __opsAlerts?: Cache }
@@ -59,7 +64,8 @@ export async function getRuleConfig() {
     at: Date.now(),
     set,
     enabled: Object.fromEntries(RULE_DEFS.map((def) => [def.key, enabled(def.key)])),
-    budgetPct: params('budget_threshold').pct ?? 85
+    budgetPct: params('budget_threshold').pct ?? 85,
+    params: Object.fromEntries(RULE_DEFS.map((def) => [def.key, params(def.key)]))
   }
   return c.rules
 }
