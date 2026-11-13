@@ -319,13 +319,21 @@ export type ServiceView = {
   lastDeploy: { at: string; sha: string; environment: string } | null
 }
 
-export async function getServicesView(): Promise<ServiceView[]> {
-  const m = monitor()
-  const services = await prisma.service.findMany({ where: { enabled: true }, orderBy: { name: 'asc' } })
-  const since = new Date(Date.now() - 30 * DAY)
-  const [rollups, deployments] = await Promise.all([
+// Releves horaires + derniers deploiements. Les releves ne changent qu'une fois par heure et la page "Vue d'ensemble" se rafraichit :
+// sans economie, CHAQUE rafraichissement relisait les ~6 000 lignes des 30 derniers jours (~0,7 Mo) depuis Neon, ce qui a contribue a
+// epuiser les 5 Go de transfert mensuel du projet `ops` (incident du 2026-11-13). Maintenant :
+//   - les TOTAUX sur 30 jours (disponibilite) sont calcules par la base (une ligne par service) ;
+//   - seuls les 3 derniers jours de releves sont lus (courbe, p95 de repli, certificat) ;
+//   - le tout est mis en cache 10 minutes (les echantillons en cours, en memoire, restent frais).
+const SERVICES_DATA_TTL_MS = 10 * 60_000
+const RECENT_ROLLUPS_DAYS = 3
+
+async function queryServicesData() {
+  const now = Date.now()
+  const [sums, rollups, deployments] = await Promise.all([
+    prisma.probeRollup.groupBy({ by: ['serviceId'], where: { hour: { gte: new Date(now - 30 * DAY) } }, _sum: { checks: true, failures: true } }),
     prisma.probeRollup.findMany({
-      where: { hour: { gte: since } },
+      where: { hour: { gte: new Date(now - RECENT_ROLLUPS_DAYS * DAY) } },
       orderBy: { hour: 'asc' },
       select: { serviceId: true, hour: true, checks: true, failures: true, avgMs: true, p95Ms: true, certExpiresAt: true }
     }),
@@ -336,14 +344,40 @@ export async function getServicesView(): Promise<ServiceView[]> {
       select: { startedAt: true, commitSha: true, environment: true, project: { select: { slug: true } } }
     })
   ])
+  const totals = new Map(sums.map((row) => [row.serviceId, { checks: row._sum.checks ?? 0, failures: row._sum.failures ?? 0 }]))
+  return { totals, rollups, deployments }
+}
+
+const servicesDataCache = globalThis as unknown as { __opsServicesData?: { at: number; data: Awaited<ReturnType<typeof queryServicesData>> } | null }
+
+// A appeler quand un deploiement est enregistre : le cache ne doit pas masquer un deploiement tout frais.
+export function invalidateServicesDataCache() {
+  servicesDataCache.__opsServicesData = null
+}
+
+async function loadServicesData() {
+  const cached = servicesDataCache.__opsServicesData
+  if (cached && Date.now() - cached.at < SERVICES_DATA_TTL_MS) {
+    return cached.data
+  }
+  const data = await queryServicesData()
+  servicesDataCache.__opsServicesData = { at: Date.now(), data }
+  return data
+}
+
+export async function getServicesView(): Promise<ServiceView[]> {
+  const m = monitor()
+  const services = await prisma.service.findMany({ where: { enabled: true }, orderBy: { name: 'asc' } })
+  const { totals, rollups, deployments } = await loadServicesData()
 
   return services.map((service) => {
     const track = m.tracks.get(service.slug)
     const rows = rollups.filter((row) => row.serviceId === service.id)
     const pendingSamples = track ? [...track.pending.values()].flat() : []
     const pendingSummary = summarize(pendingSamples)
-    const checks = rows.reduce((n, r) => n + r.checks, 0) + pendingSummary.checks
-    const failures = rows.reduce((n, r) => n + r.failures, 0) + pendingSummary.failures
+    const total = totals.get(service.id) ?? { checks: 0, failures: 0 }
+    const checks = total.checks + pendingSummary.checks
+    const failures = total.failures + pendingSummary.failures
 
     const recent = (track?.samples ?? []).filter((s) => s.at >= Date.now() - DAY)
     const okLatencies = recent.filter((s) => s.ok && s.latencyMs !== null).map((s) => s.latencyMs as number)

@@ -4,7 +4,17 @@ import { lastKnownProcesses } from '../../utils/serverIngest'
 
 export default defineEventHandler(async () => {
   const since = new Date(Date.now() - 24 * 3_600_000)
-  const rows = await prisma.serverMetric.findMany({ where: { capturedAt: { gte: since } }, orderBy: { capturedAt: 'asc' }, take: 2000 })
+  // Courbes : colonnes numeriques seulement (le JSON des processus est lu a part, sur quelques lignes : il n'est present que
+  // dans 1 mesure sur 5 et pese ~700 octets, donc le relire sur 24 h pour chaque affichage gaspillait du transfert Neon).
+  const [rows, withProcesses] = await Promise.all([
+    prisma.serverMetric.findMany({
+      where: { capturedAt: { gte: since } },
+      orderBy: { capturedAt: 'asc' },
+      take: 2000,
+      select: { host: true, capturedAt: true, cpuPct: true, memPct: true, diskPct: true, netOutMbps: true }
+    }),
+    prisma.serverMetric.findMany({ where: { capturedAt: { gte: since } }, orderBy: { capturedAt: 'desc' }, take: 24, select: { host: true, payload: true } })
+  ])
 
   const byHost = new Map<string, typeof rows>()
   for (const row of rows) {
@@ -25,7 +35,7 @@ export default defineEventHandler(async () => {
         diskPct: last.diskPct,
         netOutMbps: last.netOutMbps,
         // L'agent ne lit PM2 qu'une minute sur 5 : on prend la liste de la derniere mesure qui en contient une.
-        processes: lastKnownProcesses(series),
+        processes: lastKnownProcesses(withProcesses.filter((row) => row.host === host).reverse()),
         series: series.map((row) => ({ at: row.capturedAt.toISOString(), cpu: row.cpuPct, mem: row.memPct, net: row.netOutMbps }))
       }
     })

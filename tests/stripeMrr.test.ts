@@ -524,3 +524,18 @@ test('changedSubscriptions rewrites a row when only its client label changes', (
   assert.equal(changedSubscriptions([mk({ customerLabel: 'Marie D.' })], stored).length, 1)
   assert.equal(changedSubscriptions([mk({ customerLabel: null })], stored).length, 1)
 })
+
+import { withLastSeen } from '../server/utils/serverAlerts.ts'
+
+test('withLastSeen: a host only known by its last date becomes a silent-agent candidate, recent hosts are untouched', () => {
+  const recent = series(3) // srv1 : mesures recentes
+  const merged = withLastSeen(recent, [{ host: 'srv1', at: T0 - 5 * 3_600_000 }, { host: 'srv2', at: T0 - 50 * MIN_MS }])
+  assert.equal(merged.length, 4) // srv1 inchange (deja connu), srv2 ajoute
+  const stale = merged.find((s) => s.host === 'srv2')!
+  assert.equal(stale.at, T0 - 50 * MIN_MS)
+  assert.deepEqual([stale.cpuPct, stale.memPct, stale.diskPct, stale.processes], [null, null, null, null])
+  // et l'agent de srv2 est bien declare silencieux (50 min sans mesure), srv1 non
+  const alerts = desiredServerAlerts(merged, DEFAULT_SERVER_RULES, T0 + 20_000)
+  assert.deepEqual(alerts.desired.map((a) => a.fingerprint), ['agent_silent:srv2'])
+  assert.deepEqual([...alerts.silentHosts], ['srv2'])
+})

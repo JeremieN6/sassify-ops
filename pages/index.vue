@@ -48,9 +48,22 @@ async function reload() {
     refreshing.value = false
   }
 }
+// Rafraichissement automatique : toutes les 5 minutes et SEULEMENT si l'onglet est visible (un onglet laisse ouvert en arriere-plan
+// toute la journee relisait la base chaque minute : incident de transfert Neon du 2026-11-13). Au retour sur l'onglet, mise a jour
+// immediate si les donnees ont plus de 5 minutes.
+const REFRESH_MS = 5 * 60_000
 onMounted(() => {
-  const timer = setInterval(reload, 60_000)
-  onBeforeUnmount(() => clearInterval(timer))
+  const timer = setInterval(() => {
+    if (document.visibilityState === 'visible') void reload()
+  }, REFRESH_MS)
+  const onVisible = () => {
+    if (document.visibilityState === 'visible' && Date.now() - fetchedAt.value > REFRESH_MS) void reload()
+  }
+  document.addEventListener('visibilitychange', onVisible)
+  onBeforeUnmount(() => {
+    clearInterval(timer)
+    document.removeEventListener('visibilitychange', onVisible)
+  })
 })
 
 const HEALTH = {
