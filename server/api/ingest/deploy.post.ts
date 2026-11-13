@@ -62,6 +62,7 @@ export default defineEventHandler(async (event) => {
     }
   })
 
+  invalidateServicesDataCache() // la Vue d'ensemble doit voir ce deploiement tout de suite (cache de 5 min sur les releves)
   await handleDeployResult(body.project, body.environment, body.status, body.commit, body.branch ?? null)
   return { ok: true }
 })

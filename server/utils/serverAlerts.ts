@@ -44,6 +44,17 @@ const MIN = 60_000
 const SUSTAINED_SHARE = 0.8
 const NOT_RUNNING = new Set(['stopped', 'errored', 'stopping', 'launching', 'one-launch-status'])
 
+// Hotes dont on ne connait que la DATE de derniere mesure (agrege cote base : un GROUP BY renvoie quelques lignes, au lieu de relire
+// toute la table). Un hote absent des mesures recentes devient une mesure vide a cette date : c'est ce qui permet de declarer un
+// agent silencieux meme apres plus de 45 minutes, sans charger d'historique.
+export function withLastSeen(samples: MetricSample[], lastSeen: { host: string; at: number }[]): MetricSample[] {
+  const known = new Set(samples.map((sample) => sample.host))
+  const stale: MetricSample[] = lastSeen
+    .filter((entry) => !known.has(entry.host))
+    .map((entry) => ({ host: entry.host, at: entry.at, cpuPct: null, memPct: null, diskPct: null, processes: null }))
+  return [...stale, ...samples]
+}
+
 export type ServerAlertResult = { desired: DesiredAlert[]; silentHosts: Set<string> }
 
 // Hote d'une empreinte `regle:hote[:detail]` (les noms de machine ne contiennent pas de ':').
