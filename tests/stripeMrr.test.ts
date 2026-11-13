@@ -539,3 +539,82 @@ test('withLastSeen: a host only known by its last date becomes a silent-agent ca
   assert.deepEqual(alerts.desired.map((a) => a.fingerprint), ['agent_silent:srv2'])
   assert.deepEqual([...alerts.silentHosts], ['srv2'])
 })
+
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { KEEP_MS, MetricStore, parseLine, type StoredMetric } from '../server/utils/metricStore.ts'
+
+const metric = (host: string, at: number, over: Partial<StoredMetric> = {}): StoredMetric => ({
+  host, capturedAt: new Date(at), cpuPct: 10, memPct: 30, diskPct: 46, netOutMbps: 0.1, payload: null, ...over
+})
+
+test('MetricStore: append, read back, survive a restart, keep chronological order', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ops-metrics-'))
+  try {
+    const t0 = Date.parse('2026-11-13T12:00:00Z')
+    const store = new MetricStore(dir, 'm.jsonl', () => t0 + 10 * MIN_MS)
+    await store.append(metric('srv1', t0 + 2 * MIN_MS, { payload: { processes: [{ name: 'web', restarts: 3, status: 'online' }] } }))
+    await store.append(metric('srv1', t0 + 1 * MIN_MS)) // mesure tardive : doit se ranger avant
+    await store.append(metric('srv2', t0 + 3 * MIN_MS, { cpuPct: null }))
+    const rows = await store.since(t0)
+    assert.deepEqual(rows.map((r) => [r.host, r.capturedAt.getTime() - t0]), [['srv1', MIN_MS], ['srv1', 2 * MIN_MS], ['srv2', 3 * MIN_MS]])
+    assert.deepEqual(rows[1].payload, { processes: [{ name: 'web', restarts: 3, status: 'online' }] })
+    assert.equal(rows[2].cpuPct, null)
+    assert.deepEqual((await store.since(t0 + 2 * MIN_MS)).length, 2) // filtre par date
+    assert.deepEqual((await store.lastSeen()).sort((a, b) => a.host.localeCompare(b.host)), [{ host: 'srv1', at: t0 + 2 * MIN_MS }, { host: 'srv2', at: t0 + 3 * MIN_MS }])
+
+    // redemarrage : un nouveau magasin relit le fichier
+    const again = new MetricStore(dir, 'm.jsonl', () => t0 + 11 * MIN_MS)
+    assert.equal((await again.since(t0)).length, 3)
+    assert.deepEqual(((await again.since(t0))[1] as StoredMetric).payload?.processes[0].name, 'web')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('MetricStore: ignores torn or garbage lines and drops measures older than 48 h on load', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ops-metrics-'))
+  try {
+    const now = Date.parse('2026-11-13T12:00:00Z')
+    const good = (t: number) => JSON.stringify({ h: 'srv1', t, c: 5, m: 30, d: 46, n: 0.2 })
+    const text = [good(now - 3 * 3_600_000), '{"h":"srv1","t":' /* ligne tronquee */, 'pas du json', JSON.stringify({ h: 5, t: 1 }), good(now - KEEP_MS - 1000) /* trop vieille */, ''].join(String.fromCharCode(10))
+    await writeFile(join(dir, 'm.jsonl'), text, 'utf8')
+    const store = new MetricStore(dir, 'm.jsonl', () => now)
+    assert.equal((await store.since(0)).length, 1)
+    assert.equal((await store.lastSeen()).length, 1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('MetricStore: compaction rewrites the file without old lines and never leaves a temporary file behind', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ops-metrics-'))
+  try {
+    let now = Date.parse('2026-11-10T00:00:00Z')
+    const store = new MetricStore(dir, 'm.jsonl', () => now)
+    await store.append(metric('srv1', now))
+    await store.append(metric('srv1', now + MIN_MS))
+    now += KEEP_MS + 5 * MIN_MS // le temps passe : les 2 premieres mesures deviennent trop anciennes
+    await store.append(metric('srv1', now)) // 1 h depuis la derniere compaction : declenche la compaction
+    const lines = (await readFile(join(dir, 'm.jsonl'), 'utf8')).split(String.fromCharCode(10)).filter(Boolean)
+    assert.equal(lines.length, 1)
+    assert.equal((await store.since(0)).length, 1)
+    await assert.rejects(readFile(join(dir, 'm.jsonl.tmp'), 'utf8')) // pas de fichier temporaire residuel
+    // un hote plus vu depuis plus de 48 h disparait aussi de lastSeen
+    now += KEEP_MS + MIN_MS
+    await store.compact()
+    assert.deepEqual(await store.lastSeen(), [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('parseLine accepts valid lines only and normalizes bad numbers to null', () => {
+  assert.equal(parseLine(''), null)
+  assert.equal(parseLine('{'), null)
+  assert.equal(parseLine('{"h":"a","t":"x"}'), null)
+  const parsed = parseLine('{"h":"srv1","t":1000,"c":"12","m":30.5,"d":null,"n":0.2,"p":[{"name":"web"}]}')!
+  assert.deepEqual([parsed.host, parsed.cpuPct, parsed.memPct, parsed.diskPct, parsed.netOutMbps], ['srv1', null, 30.5, null, 0.2])
+  assert.deepEqual(parsed.payload, { processes: [{ name: 'web' }] })
+})

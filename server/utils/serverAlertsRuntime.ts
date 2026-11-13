@@ -1,5 +1,6 @@
 // Evaluation periodique des alertes serveur : lit les mesures recentes, calcule les alertes souhaitees (serverAlerts.ts, pur)
 // et laisse le moteur (alerts.ts) ouvrir / fermer / notifier. Appelee toutes les 2 minutes par server/plugins/server-alerts.ts.
+import { getMetricStore } from './metricStore'
 import { DEFAULT_SERVER_RULES, SERVER_RULE_KEYS, desiredServerAlerts, hostOfFingerprint, withLastSeen, type MetricSample, type ServerRuleSet } from './serverAlerts'
 
 const WINDOW_MS = 45 * 60_000
@@ -31,19 +32,11 @@ export async function checkServerAlerts(now = Date.now()) {
     agent_silent: { enabled: config.enabled.agent_silent, minutes: param('agent_silent', 'minutes', defaults.agent_silent.minutes) }
   }
 
-  // Mesures des 45 dernieres minutes + date de derniere mesure de chaque machine.
-  // ATTENTION (incident du 2026-11-13) : ne JAMAIS utiliser `findMany({ distinct })` de Prisma ici. Sans la fonctionnalite
-  // `nativeDistinct`, Prisma relit TOUTE la table puis deduplique en memoire : toutes les 2 minutes, ca a consomme les 5 Go de
-  // transfert mensuel de Neon en quelques jours. `groupBy` est agrege par la base et ne renvoie qu'une ligne par machine.
-  const [recent, lastSeen] = await Promise.all([
-    prisma.serverMetric.findMany({
-      where: { capturedAt: { gte: new Date(now - WINDOW_MS) } },
-      orderBy: { capturedAt: 'asc' },
-      take: 1000,
-      select: { host: true, capturedAt: true, cpuPct: true, memPct: true, diskPct: true, payload: true }
-    }),
-    prisma.serverMetric.groupBy({ by: ['host'], _max: { capturedAt: true } })
-  ])
+  // Mesures des 45 dernieres minutes + date de derniere mesure de chaque machine, lues dans le magasin LOCAL (en memoire, rechargee
+  // depuis un fichier au demarrage) : AUCUN acces a Neon pour evaluer les alertes (incident du 2026-11-13 : `distinct` de Prisma
+  // relisait toute la table toutes les 2 minutes ; et ecrire/lire chaque minute dans Neon l'empechait de se mettre en veille).
+  const store = getMetricStore()
+  const [recent, lastSeen] = await Promise.all([store.since(now - WINDOW_MS), store.lastSeen()])
 
   const samples: MetricSample[] = withLastSeen(
     recent.map((row) => ({
@@ -54,7 +47,7 @@ export async function checkServerAlerts(now = Date.now()) {
       diskPct: row.diskPct,
       processes: toProcesses(row.payload)
     })),
-    lastSeen.flatMap((entry) => (entry._max.capturedAt ? [{ host: entry.host, at: entry._max.capturedAt.getTime() }] : []))
+    lastSeen
   )
 
   const { desired, silentHosts } = desiredServerAlerts(samples, rules, now)
